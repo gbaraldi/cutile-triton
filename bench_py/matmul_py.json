@@ -1,0 +1,1 @@
+{"name": "matmul", "num_warps": 8, "warp_size": 32, "shared": 98304}

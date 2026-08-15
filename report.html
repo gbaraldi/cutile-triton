@@ -1,0 +1,3021 @@
+<title>cuTile.jl on Triton</title>
+<style>
+  :root {
+    --paper: #F7F8F6;
+    --ink: #1D2624;
+    --muted: #5A6763;
+    --faint: #8A9691;
+    --rule: #DCE2DF;
+    --card: #FFFFFF;
+    --code-bg: #EDF1EF;
+    --accent: #0E6E6B;
+    --accent-soft: #E1EEEC;
+    --pass: #2E7D46;
+    --pass-soft: #E3F0E6;
+    --warn: #A66A1E;
+    --warn-soft: #F5EBDA;
+    --risk: #B3402F;
+    --risk-soft: #F6E4E0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #141A19;
+      --ink: #E4EBE8;
+      --muted: #9BA8A3;
+      --faint: #6E7C77;
+      --rule: #2A3531;
+      --card: #1B2321;
+      --code-bg: #101614;
+      --accent: #4FB3AE;
+      --accent-soft: #16302E;
+      --pass: #5BC17E;
+      --pass-soft: #16301F;
+      --warn: #D9A05B;
+      --warn-soft: #33270F;
+      --risk: #E07862;
+      --risk-soft: #3A1B14;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141A19;
+    --ink: #E4EBE8;
+    --muted: #9BA8A3;
+    --faint: #6E7C77;
+    --rule: #2A3531;
+    --card: #1B2321;
+    --code-bg: #101614;
+    --accent: #4FB3AE;
+    --accent-soft: #16302E;
+    --pass: #5BC17E;
+    --pass-soft: #16301F;
+    --warn: #D9A05B;
+    --warn-soft: #33270F;
+    --risk: #E07862;
+    --risk-soft: #3A1B14;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    padding: 3rem 1.25rem 5rem;
+  }
+  main { max-width: 74ch; margin: 0 auto; }
+
+  h1, h2, h3 {
+    font-family: Charter, "Bitstream Charter", "Source Serif 4", Georgia, serif;
+    line-height: 1.2;
+    text-wrap: balance;
+  }
+  h1 { font-size: 2.3rem; margin: 0.4rem 0 0.6rem; font-weight: 700; }
+  h2 { font-size: 1.45rem; margin: 3rem 0 0.8rem; padding-top: 1.6rem; border-top: 1px solid var(--rule); }
+  h3 { font-size: 1.1rem; margin: 1.8rem 0 0.5rem; }
+  p { margin: 0.7rem 0; }
+  a { color: var(--accent); }
+
+  .eyebrow {
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 0; }
+  .lede { font-size: 1.12rem; color: var(--ink); }
+
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 0.86em;
+  }
+  code {
+    background: var(--code-bg);
+    border-radius: 3px;
+    padding: 0.08em 0.3em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; font-size: 0.82rem; }
+
+  .chip {
+    display: inline-block;
+    font: 600 0.68rem/1 system-ui, sans-serif;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-radius: 999px;
+    padding: 0.3em 0.75em;
+    white-space: nowrap;
+  }
+  .chip.pass { background: var(--pass-soft); color: var(--pass); }
+  .chip.warn { background: var(--warn-soft); color: var(--warn); }
+  .chip.risk { background: var(--risk-soft); color: var(--risk); }
+  .chip.new  { background: var(--accent-soft); color: var(--accent); }
+  .chip.keep { background: var(--code-bg); color: var(--muted); }
+
+  /* pipeline diagram */
+  .pipeline-scroll { overflow-x: auto; margin: 1.4rem 0 0.4rem; padding-bottom: 0.5rem; }
+  .pipeline { display: flex; align-items: stretch; gap: 0; min-width: max-content; }
+  .stage {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    width: 12.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .stage.new-stage { border-color: var(--accent); }
+  .stage .s-label { font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); font-weight: 600; }
+  .stage .s-name { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; font-weight: 600; }
+  .stage .s-sub { font-size: 0.78rem; color: var(--muted); line-height: 1.4; flex: 1; }
+  .arrow {
+    align-self: center;
+    color: var(--faint);
+    padding: 0 0.35rem;
+    font-size: 1.1rem;
+    user-select: none;
+  }
+  .diagram-caption { font-size: 0.82rem; color: var(--muted); margin-top: 0.2rem; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.92rem;
+    margin: 1rem 0;
+  }
+  .table-scroll { overflow-x: auto; }
+  th, td {
+    text-align: left;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-size: 0.72rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    border-bottom: 2px solid var(--rule);
+  }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.9rem; margin: 1.2rem 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1rem 1.1rem;
+  }
+  .card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; display: flex; align-items: center; gap: 0.6rem; justify-content: space-between; }
+  .card p { font-size: 0.88rem; color: var(--muted); margin: 0.4rem 0 0; }
+
+  ol.roadmap { padding-left: 0; list-style: none; counter-reset: phase; margin: 1.2rem 0; }
+  ol.roadmap > li {
+    counter-increment: phase;
+    position: relative;
+    padding: 0 0 1.3rem 3rem;
+    border-left: 2px solid var(--rule);
+    margin-left: 1rem;
+  }
+  ol.roadmap > li:last-child { border-left-color: transparent; }
+  ol.roadmap > li::before {
+    content: counter(phase);
+    position: absolute;
+    left: -1.05rem;
+    top: -0.2rem;
+    width: 2rem; height: 2rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--paper);
+    font: 700 0.95rem/2rem system-ui, sans-serif;
+    text-align: center;
+  }
+  ol.roadmap b { display: block; margin-bottom: 0.15rem; }
+  ol.roadmap p { font-size: 0.92rem; color: var(--muted); margin: 0.2rem 0; }
+
+  ul { padding-left: 1.3rem; }
+  li { margin: 0.35rem 0; }
+
+  .footnote { color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--rule); margin-top: 3rem; padding-top: 1rem; }
+  .footnote code { font-size: 0.8rem; }
+</style>
+
+<main>
+  <p class="eyebrow">Feasibility report · prototype backend running real kernels</p>
+  <h1>cuTile.jl on Triton</h1>
+  <p class="meta">What it takes to retarget cuTile.jl from NVIDIA Tile IR to Triton, covering CUDA, AMD, and CPU · August 13–14, 2026</p>
+
+  <p class="lede">The port works. A prototype backend now consumes cuTile.jl's real front-end output (<code>code_structured</code>) and runs unmodified cuTile kernels — vadd, reductions, TF32 matmul, persistent softmax — through MLIR.jl → TTIR text → the stock <code>triton</code> pip wheel → CUDA.jl, <em>without Reactant and without any Triton-specific native library</em>. 10/10 correctness tests pass, including ragged sizes, padding modes, and <code>while</code>-loop persistence. On an H100, the Julia-emitted kernels match Python Triton's performance everywhere, and with the TMA descriptor lowering the fp16 matmul reaches <b>541 TFLOP/s — above both native tileiras (447) and cuBLAS (512)</b>.</p>
+
+  <h2>The validated pipeline</h2>
+  <p>cuTile.jl's front half is untouched. Only the serializer and the toolchain below it are replaced.</p>
+
+  <div class="pipeline-scroll">
+    <div class="pipeline">
+      <div class="stage">
+        <span class="s-label">Front end · unchanged</span>
+        <span class="s-name">cuTileInterpreter + IRStructurizer</span>
+        <span class="s-sub">Inference, inlining, StructuredIRCode, ~10 optimization passes (~18k LOC, target-independent)</span>
+        <span class="chip keep">Reused as-is</span>
+      </div>
+      <span class="arrow">→</span>
+      <div class="stage new-stage">
+        <span class="s-label">New · replaces bytecode/</span>
+        <span class="s-name">TTIR emitter (MLIR.jl)</span>
+        <span class="s-sub">Unregistered <code>tt</code> dialect, opaque <code>!tt.ptr</code>, Reactant's generated builders, generic-form text</span>
+        <span class="chip pass">PoC pass</span>
+      </div>
+      <span class="arrow">→</span>
+      <div class="stage">
+        <span class="s-label">Compiler · triton wheel</span>
+        <span class="s-name">triton.compile("k.ttir")</span>
+        <span class="s-sub">IRSource path, offline via explicit GPUTarget; bundled ptxas / ROCm lld; metadata JSON out</span>
+        <span class="chip pass">PoC pass</span>
+      </div>
+      <span class="arrow">→</span>
+      <div class="stage">
+        <span class="s-label">Runtime · CUDA.jl / AMDGPU.jl</span>
+        <span class="s-name">CuModule → cudacall</span>
+        <span class="s-sub">threads = num_warps × warp_size, shmem from metadata, two trailing NULL scratch pointers</span>
+        <span class="chip pass">PoC pass (H100)</span>
+      </div>
+    </div>
+  </div>
+  <p class="diagram-caption">Working PoC in <span class="mono">~/fun3/cutile-triton/</span> — <span class="mono">vadd_emit.jl · step1_irsource.py · vadd_launch.jl</span>, against triton 3.7.1 and MLIR_jll 18.1.7.</p>
+
+  <h3>Experiment log</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Step</th><th>What was tested</th><th>Result</th></tr>
+    <tr>
+      <td><span class="mono">step1_irsource.py</span></td>
+      <td><code>triton.compile</code> on a <code>.ttir</code> <em>file</em> (IRSource), offline with <code>GPUTarget("cuda", 90, 32)</code></td>
+      <td><span class="chip pass">Pass</span> 5,528-byte cubin, metadata JSON</td>
+    </tr>
+    <tr>
+      <td><span class="mono">vadd_emit.jl</span></td>
+      <td>MLIR.jl + unregistered <code>tt</code> dialect + Reactant's generated builders → generic-form TTIR text</td>
+      <td><span class="chip pass">Pass</span> first try; builders ran unmodified</td>
+    </tr>
+    <tr>
+      <td>version-skew check</td>
+      <td>MLIR 18 printer output parsed by triton 3.7.1's MLIR (LLVM ~22)</td>
+      <td><span class="chip pass">Pass</span> identical cubin size to Python-sourced kernel</td>
+    </tr>
+    <tr>
+      <td>AMD leg</td>
+      <td>Same Julia-emitted TTIR with <code>GPUTarget("hip", "gfx942", 64)</code></td>
+      <td><span class="chip pass">Pass</span> 5,784-byte hsaco (compile only; no AMD hw here)</td>
+    </tr>
+    <tr>
+      <td><span class="mono">vadd_launch.jl</span></td>
+      <td>CUDA.jl loads cubin, launches with metadata contract, checks results</td>
+      <td><span class="chip pass">Pass</span> correct results on H100</td>
+    </tr>
+  </table>
+  </div>
+
+  <p>Two details the PoC settled empirically: Triton's parser accepts dialect enum attributes spelled as plain integers (<code>axis = 0 : i32</code>), so no opaque-attribute tricks were needed; and the kernel ABI in triton 3.7 is the declared arguments plus <em>two</em> trailing <code>u64</code> scratch pointers (global scratch and profile scratch — pass NULL when the metadata sizes are 0).</p>
+
+  <h2>The prototype backend</h2>
+  <p><span class="mono">TritonEmitter.jl</span> (~820 lines) walks cuTile.jl's post-optimization <code>StructuredIRCode</code> — the same IR the bytecode backend consumes — and builds TTIR through the generated <code>tt</code> builders. <span class="mono">TritonRun.jl</span> compiles via the wheel and launches through CUDA.jl with cuTile-style argument flattening (<code>TileArray → ptr, sizes…, strides…</code>). Kernels are written in the plain cuTile language; nothing kernel-side knows Triton exists.</p>
+
+  <h3>Intrinsic coverage</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>cuTile construct</th><th>Triton lowering</th><th>Status</th></tr>
+    <tr><td><code>make_tensor_view</code> / <code>make_partition_view</code> / <code>load/store_partition_view</code> (padding: Undetermined, Zero, NegInf)</td><td>compile-time view tracking → <code>tt.make_range</code> + stride arithmetic + <code>tt.addptr</code> + bounds mask (+ <code>other</code> for padded loads)</td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td><code>get_tile_block_id</code> / <code>get_num_tile_blocks</code> / <code>get_index_space_shape</code></td><td><code>tt.get_program_id</code> / <code>tt.get_num_programs</code> / <code>arith.ceildivsi</code></td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td>scalar &amp; tile arithmetic (<code>add/sub/mul/div/rem/min/max</code>, cmp, logic), math (<code>exp/log/sin/tanh/sqrt/…</code>), conversions (<code>ftof/itof/ftoi/ext/trunc</code>)</td><td><code>arith.*</code> / <code>math.*</code> (elementwise on tensors, 0-D tiles re-split to scalars)</td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td><code>mma</code> + TF32 conversion</td><td><code>tt.dot</code> with <code>inputPrecision=tf32</code> (TF32 tracked as a value tag, not a type)</td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td><code>reduce</code> (+, max, min, *) with kept dims; <code>constant</code>, <code>iota</code>, <code>broadcast</code></td><td><code>tt.reduce</code> region + <code>tt.expand_dims</code>; dense-splat constants; <code>tt.splat/broadcast</code></td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td><code>IfOp</code> / <code>ForOp</code> / <code>WhileOp</code> with carries, multi-yields, <code>undef</code> edges; tuples/getfield; tokens</td><td><code>scf.if/for/while</code> with iter_args; aggregates tracked at compile time; token graph dropped (Triton uses program order)</td><td><span class="chip pass">Done</span></td></tr>
+    <tr><td>gather/scatter, atomics, scan, RNG, fp8 dtypes, <code>LoopOp</code>, arbitrary reduce combiner subprograms</td><td><code>tt.gather</code>/ptr-arith, <code>tt.atomic_*</code>, <code>tt.scan</code> — same patterns, not yet wired</td><td><span class="chip warn">Not yet</span></td></tr>
+  </table>
+  </div>
+  <p>Emitter findings worth recording: intrinsic-level axis arguments are <em>0-based Julia dims</em> (surface <code>dims=2</code> arrives as <code>1</code>); the K-loop's upper bound arrives already exclusive, so <code>ForOp</code> is exactly <code>scf.for</code>; cuTile pre-swaps <code>mma</code> operands for row-major, so consistent shape reversal makes <code>tt.dot</code> drop in unchanged; <code>Undef</code> yield edges are dead by construction and materialize safely as zeros.</p>
+
+  <h3>Correctness (H100, vs CPU references)</h3>
+  <p>All 10 tests pass: vadd in Float32/Float16/Float64 at divisible and ragged sizes (999,999 — masking), rowsum (4096×128 reduction), TF32 matmul at 512³ and ragged 300×260×200 (zero-padding on K), and the cuTile-example persistent softmax (1000×2048, tile 1024, NegInf padding, <code>while</code> loop over columns, fewer blocks than columns).</p>
+
+  <h3>cuTile.jl's own device test suite through this backend</h3>
+  <p>By overwriting <code>cuTile.cufunction</code> with a shim, the <em>unmodified</em> upstream test suite runs through the Triton backend. After a gap-filling campaign driven by the suite itself, the version-matched cuTile 0.3.2 suite (16 files) lands at <b>1,810 pass / 6 fail / 4 error</b> — 12 of 16 files fully green — from 221/49/229 at first honest count. (Four additional test files in the repo's main branch test features 0.3.2 cannot compile natively either — kw-<code>arange</code> gather views, literal-array constants, Int64 indexing, PDL — verified by reproducing identical native failures; one of those was a genuine upstream front-end bug on Julia 1.12, <code>promote_scalar_type</code> vs Union types, fixed via a flagged method overwrite that's a candidate cuTile PR.)</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Area</th><th>Status</th><th>Detail</th></tr>
+    <tr><td>Reductions + scans (argmax/argmin, user-defined combiner subprograms)</td><td><span class="chip pass">917 / 918</span></td><td>variadic <code>tt.reduce</code> with multi-value combiner regions; arbitrary Julia combiners compile via cuTile's front end; signedness from Julia types</td></tr>
+    <tr><td>RNG (Philox / <code>kernel_state</code>)</td><td><span class="chip pass">472 / 474</span></td><td>implicit seed param in the ABI + <code>tt.mulhiui</code> + <code>tt.cat</code>; distributions pass across all 13 dtypes incl. BFloat16</td></tr>
+    <tr><td>Broadcasting</td><td><span class="chip pass">123 / 123</span></td><td>rank-changing, scalar promotion, NaN-correct comparisons</td></tr>
+    <tr><td>Tile ops (3-D/4-D, slicing, permute, pack/unpack, N-D cat, linear indexing)</td><td><span class="chip pass">114 / 119</span></td><td>slicing/cat/pack via reshape+trans+<code>tt.split/join</code> chains (no slice op in ttir); linear tile indices delinearized column-major</td></tr>
+    <tr><td>Early returns, runtime asserts, atomics, gather/scatter, math, views, types</td><td><span class="chip pass">~90 passing</span></td><td>early <code>return</code> in guards &rarr; predicated scf regions; runtime asserts &rarr; <code>tt.assert</code>; atomics via <code>tt.atomic_rmw/cas</code></td></tr>
+    <tr><td>Integer matmul (i8, all signedness combos)</td><td><span class="chip pass">4 / 4</span></td><td>Triton's int8 dot needs K≥32 and is signed-only — and <em>silently miscompiles</em> (exactly 2×) below that via IRSource since only the Python frontend asserts; emulated with an exact IEEE-f32 dot, signedness from tracked Julia types</td></tr>
+    <tr><td>Transposed views (<code>order=(2,1)</code>), linear indices, struct kernel args, world-age redefinition</td><td><span class="chip pass">done</span></td><td>view <code>order</code> permutes the size/stride pairing per tile dim; nested structs flatten recursively; harness cache keys on the world counter</td></tr>
+    <tr><td>Residual (4 errors, 6 fails)</td><td><span class="chip warn">tail</span></td><td>masked <code>atomic_cas</code> (2 — no tt equivalent, upstream Triton gap), decrementing-StepRange <code>LoopOp</code> (1), one triton-internal MLIR assertion crash on a tensor&lt;1&gt; pattern (<code>full</code> with runtime value); fails: 3 hints tests expecting cuTile's pre-Blackwell "num_cta_in_cga" error string, 3 native-IR <code>@device_code_tiled</code> content checks — all implementation-specific expectations no Triton backend can satisfy verbatim</td></tr>
+  </table>
+  </div>
+  <p>Suite-driven fixes that hardened the emitter: <code>offset</code>/raw-pointer gather-scatter, bitcast, permute→<code>tt.trans</code>, unsigned types with signedness recovered from Julia types (conversions, comparisons, reductions — MLIR ints are signless, and <code>sitofp</code>-vs-<code>uitofp</code> was silently corrupting RNG floats), NaN-correct <code>!=</code>, rank-changing broadcasts, 1-D reductions, <code>pow = exp2(y·log2 x)</code> and <code>negf = 0 − x</code> (neither has a Triton legalization), i64→i32 index coercion, BFloat16, <code>ThrowNode</code> surfacing. Plus reflection tooling: <code>code_triton(f, argtypes; stage=:ttir/:ttgir/:llir/:ptx/:sass)</code> mirrors cuTile's <code>@device_code_*</code> family. One TMA lesson: a (1,128) tile's 4-byte inner box dim trapped the GPU — descriptor legality needs a 16-byte minimum inner-box check.</p>
+
+  <h2>Performance (H100 NVL, min of 50 runs)</h2>
+  <p>Baselines: <b>cuTile-native</b> is the same kernel source through tileiras 13.3 (Hopper support landed in cuTile 0.3.2); <b>python-triton</b> is the equivalent <code>@triton.jit</code> kernel at the same tile config, compiled by the same wheel and launched identically from Julia.</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Kernel</th><th>julia→triton</th><th>python→triton</th><th>cuTile-native (tileiras)</th><th>Library</th></tr>
+    <tr><td>vadd 2²⁷ f32 (GB/s)</td><td class="num"><b>3599</b></td><td class="num">3605</td><td class="num">3586</td><td class="num">2532 <span class="mono">(CUDA.jl bcast)</span></td></tr>
+    <tr><td>matmul 4096³ tf32 (TFLOP/s)</td><td class="num"><b>119–120</b></td><td class="num">105</td><td class="num">171</td><td class="num">285 <span class="mono">(cuBLAS tf32)</span></td></tr>
+    <tr><td>softmax 1000×32768 persistent (GB/s)</td><td class="num"><b>2965</b></td><td class="num">2995</td><td class="num">1092</td><td class="num">—</td></tr>
+  </table>
+  </div>
+  <ul>
+    <li><b>Frontend parity proven:</b> Julia-emitted TTIR matches or slightly beats the Python frontend on every kernel and every config tried — the backend treats both identically (matmul even allocated byte-identical shared memory).</li>
+    <li><b>vadd</b> is at memory-bandwidth parity three ways (~3.6 TB/s of ~3.9 peak).</li>
+    <li><b>softmax:</b> the Triton path is ~2.7× faster than tileiras (2965 vs 1092 GB/s, with tileiras given the example's <code>occupancy=2</code> hint) — persistent while-loop kernels are currently a tileiras weak spot, and a place the Triton backend immediately pays for itself.</li>
+    <li><b>tf32 matmul:</b> tileiras wins (171 vs 120); Triton's pointer+mask loads plateau at ~120 TF regardless of tile/stage config (swept; larger f32 tiles exceed the 227KB shared-memory ceiling). See below — TMA does <em>not</em> fix this one.</li>
+  </ul>
+
+  <h3>The TMA / descriptor experiment</h3>
+  <p>The emitter now has a second view lowering: when a <code>PartitionView</code> is descriptor-legal (2-D, unit-stride inner dim per <code>ArraySpec</code>, box dims ≤ 256, padding TMA can honor — zero-fill covers <code>Zero</code>/<code>Undetermined</code>, <code>NegInf</code> falls back), it emits <code>tt.make_tensor_descriptor</code> + <code>tt.descriptor_load/store</code>, mirroring Python's <code>tl.make_tensor_descriptor</code> exactly (i32 shapes, i64 strides, literal-1 inner stride, element offsets). The launcher allocates the TMA workspace the way Python's driver does (<code>grid volume × global_scratch_size</code>, 128-aligned). Same kernel source, same correctness suite: all 10 tests pass on both lowerings.</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>matmul 4096³ (TFLOP/s)</th><th>pointer+mask</th><th>TMA descriptors</th><th>python-triton TMA</th><th>cuTile-native</th><th>cuBLAS</th></tr>
+    <tr><td><b>fp16</b> (f32 acc)</td><td class="num">114</td><td class="num"><b>453 → 541</b> (128²×64 → 128×256×64)</td><td class="num">—</td><td class="num">447</td><td class="num">512</td></tr>
+    <tr><td><b>tf32</b></td><td class="num">119</td><td class="num">69–115</td><td class="num">69 (same config; +warp-spec attr: no change)</td><td class="num">171</td><td class="num">285</td></tr>
+  </table>
+  </div>
+  <ul>
+    <li><b>fp16 is the headline:</b> descriptors are worth <b>4.8×</b> (114 → 541 TF), and the cuTile-language kernel through Triton <b>beats both native tileiras (447) and cuBLAS f16 (512)</b> on H100. At tileiras' own tile config it ties (453 vs 447).</li>
+    <li><b>tf32 is a Triton backend gap, not an emitter gap:</b> Python's own descriptor matmul lands at the same 69 TF (parity again), and the <code>tt.warp_specialize</code> loop attribute doesn't move it. Decisively: Triton's official TMA examples (<code>python/tutorials/09-persistent-matmul.py</code>) are hard-coded fp16/fp8-only (<code>dtype = tl.float8e4nv if FP8_OUTPUT else tl.float16</code>) — <em>no tf32 descriptor matmul exists upstream at all</em>. Keep pointer+mask (or tileiras) for f32 GEMM until upstream catches up.</li>
+    <li><b>Validated against the canonical kernel:</b> tutorial 09's <code>matmul_kernel_tma</code> (group swizzle, K-innermost operands, <code>b.T</code>, optional warp-spec), run at the same config on the same arrays: 529.6 TF (536 with warp-spec) vs our 541.5 — the cuTile-derived lowering slightly outperforms Triton's own reference, on natural column-major layouts where the tutorial requires a pre-transposed A.</li>
+    <li><b>Consequence for the backend design:</b> the descriptor-vs-pointer decision is a per-specialization compile-time choice (different TTIR), keyed on the same <code>ArraySpec</code> machinery cuTile already specializes on — plus a dtype heuristic (TMA on for f16/f8, off for tf32 on this Triton version). The "automatic TMA" that tileiras does moves into the emitter, where the view carries all the information needed; the cuTile kernel source is unchanged either way.</li>
+    <li><b>Device-side descriptor cost, measured:</b> an isolated micro-benchmark (descriptor-creation-only vs empty kernel) puts it at <b>~5.3ns per descriptor per CTA</b>, scaling <em>linearly with grid size</em> — the <code>UTMACCTL.IV</code> tensormap-cache invalidates serialize across CTAs instead of amortizing over SMs (SASS prologue: ~282 instructions, shared-memory descriptor assembly, async fences). For the 4096³ matmul (512 CTAs, 4 descriptors, 254µs) that's ~12µs ≈ <b>4–5% missing perf</b> — host-side descriptors would put the estimate at ~565 TF. The real hazard is short kernels with large grids: at 8192 CTAs the same prologue costs 128µs flat, which would dominate an elementwise-scale kernel. Production backend should build CUtensorMaps host-side (<code>cuTensorMapEncodeTiled</code> + 128-byte grid-constant params, as the tutorials and Torch do) whenever the <code>TileArray</code> shape is known at launch — which for cuTile is always. For comparison, <b>tileiras doesn't build tensormaps on device at all</b>: its kernels contain no descriptor stores — the cubin carries <code>EICOMPAT_ATTR_INST_TENSORMAP_V1</code> metadata and the <b>r580+ driver constructs the CUtensorMaps at launch time from the kernel's own arguments</b> (this is what the driver-version requirement buys), handing the kernel a ready buffer via a reserved constant slot (<code>c[0x0][0x198]</code>). Per CTA the kernel merely <em>prefetches</em> them (<code>UTMACCTL.PF</code>, ~2.3ns/CTA for 3 views, vs Triton's construct + <code>tensormap.cp_fenceproxy</code> + <code>UTMACCTL.IV</code> <em>invalidate</em> at ~5.3ns/CTA each). So cuTile-native already has driver-side "host" descriptors; a Julia launcher building CUtensorMaps via <code>cuTensorMapEncodeTiled</code> replicates the same design for the Triton backend in user space.</li>
+    <li>Cleanup noted: views created only for <code>num_tiles</code> probes currently emit a dead descriptor — at ~5ns/CTA that's ~1% on the 4096³ matmul; lazy or use-aware descriptor emission removes it.</li>
+  </ul>
+
+  <h3>What the SASS says</h3>
+  <p>Disassembling all six matmul cubins (nvdisasm from the wheel; tileiras cubins rebuilt from <code>JULIA_CUTILE_DUMP_BYTECODE</code> output) explains each number:</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Kernel</th><th>TFLOP/s</th><th>MMA</th><th>Loads</th><th>Regs</th><th>Structure</th></tr>
+    <tr><td>tileiras tf32</td><td class="num">171</td><td><code>GMMA.64x128x8.TF32</code> ×16</td><td>TMA (6× UTMALDG) + 24× LDSM</td><td class="num">168</td><td>A operand staged into <em>registers</em> (register-operand wgmma), deep pipeline, 127 named-barrier syncs</td></tr>
+    <tr><td>triton tf32 ptr</td><td class="num">119</td><td>same shape ×4</td><td>cp.async (96× LDGSTS)</td><td class="num">150</td><td>3-stage smem pipeline, both wgmma operands from smem descriptors</td></tr>
+    <tr><td>triton tf32 TMA</td><td class="num">69</td><td>same shape ×4</td><td>TMA (6× UTMALDG)</td><td class="num">97</td><td>thin pipeline (680 instrs, 97 regs) — TMA issued but barely overlapped; the tf32 descriptor path simply isn't scheduled aggressively in 3.7</td></tr>
+    <tr><td>tileiras f16</td><td class="num">447</td><td><code>GMMA.64x128x16.F32</code> ×16</td><td>TMA</td><td class="num">255</td><td>static smem, 128²×64 tile</td></tr>
+    <tr><td>triton f16 TMA</td><td class="num">541</td><td>same shape ×8</td><td>TMA</td><td class="num">154</td><td>structurally the same kernel as tileiras' — leaner sync, bigger 128×256 tile wins</td></tr>
+    <tr><td>triton f16 ptr</td><td class="num">114</td><td>×8</td><td><b>96× plain LDG</b> — the pipeliner didn't even emit cp.async for masked f16 loads</td><td class="num">—</td><td>explains the 4.8× TMA delta: the baseline was unpipelined</td></tr>
+  </table>
+  </div>
+  <p>So the tf32 verdict is precise: it's not TMA-vs-not — tileiras' edge is <em>scheduling</em> (register-staged A operand + deeper pipelining around the same <code>GMMA.64x128x8.TF32</code> instruction). And the f16 verdict is equally precise: given TMA descriptors, Triton emits essentially tileiras' kernel structure and then out-tunes it.</p>
+
+  <h2>Why this shape</h2>
+  <p>Production consumers of Triton split three ways. TorchInductor generates Triton <em>Python source</em> and rides the stable <code>tl.*</code> API — wrong fit here, since cuTile.jl already sits on structured, canonicalized IR. JAX Pallas builds <code>tt</code>-dialect MLIR through native bindings and hands it to XLA's in-tree Triton — that is the Reactant path, explicitly not wanted. The remaining door is the wheel's <code>IRSource</code>: fully-specialized TTIR in, cubin/hsaco + metadata out. It is a niche but exercised, unit-tested upstream path, and the PoC confirms it works from text alone — Julia needs no MLIR C-API bindings for Triton's types beyond stock MLIR_jll with <code>allowUnregisteredDialects</code>.</p>
+
+  <h2>What already exists to build on</h2>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Piece</th><th>Where</th><th>What it contributes</th></tr>
+    <tr>
+      <td>Target-independent front half</td>
+      <td><span class="mono">cuTile.jl/src/compiler/</span></td>
+      <td>Interpreter, const-prop specialization (<code>Constant</code>, <code>ArraySpec</code>), structurization, canonicalize/CSE/LICM/DCE, alias &amp; divisibility analyses — all reusable unchanged</td>
+    </tr>
+    <tr>
+      <td>Structured control flow</td>
+      <td>IRStructurizer.jl v0.6.2</td>
+      <td><code>IfOp/ForOp/WhileOp</code> map ~1:1 onto the <code>scf.if/for/while</code> Triton uses; already battle-tested by two backends</td>
+    </tr>
+    <tr>
+      <td>Generated <code>tt</code> builders</td>
+      <td><span class="mono">Reactant/src/mlir/Dialects/Triton.jl</span></td>
+      <td>1,469 lines covering the whole op set; drop-in on MLIR.jl (proven in the PoC — only shim: camelCase <code>operandSegmentSizes</code>)</td>
+    </tr>
+    <tr>
+      <td>Julia→MLIR walker precedent</td>
+      <td>MLIRKernels + <span class="mono">cpu-poc/cpu_lower.jl</span></td>
+      <td>Existing StructuredIRCode→<code>arith/math/scf</code> lowering — the scalar and control-flow half of a TTIR emitter</td>
+    </tr>
+    <tr>
+      <td>Compiler-service pattern</td>
+      <td><span class="mono">cuTile.jl/src/launch.jl, cache.jl</span></td>
+      <td>"Shell out to opaque compiler, LMDB-cache the binary" already exists for tileiras; the wheel slots into the same seam</td>
+    </tr>
+  </table>
+  </div>
+
+  <h2>The work remaining for a production backend</h2>
+  <p>The prototype proves the semantic mapping; productionizing means folding it into cuTile.jl proper.</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Component</th><th>Scope</th><th>Effort</th></tr>
+    <tr>
+      <td><b>TMA / descriptor lowering</b></td>
+      <td><code>PartitionView</code> → <code>tt.make_tensor_descriptor</code> + <code>tt.descriptor_load/store</code> with pointer+mask fallback and a dtype-aware heuristic (on for f16/f8, off for tf32)</td>
+      <td><span class="chip pass">Prototyped</span> — 541 TF f16, beats tileiras &amp; cuBLAS</td>
+    </tr>
+    <tr>
+      <td><b>Remaining intrinsics</b></td>
+      <td>gather/scatter, atomics, scan, RNG, fp8, arbitrary reduce-combiner subprograms — same patterns as the ~40 intrinsics already mapped</td>
+      <td>Mechanical <span class="chip pass">patterns proven</span></td>
+    </tr>
+    <tr>
+      <td><b>Integration into cuTile.jl</b></td>
+      <td>Parameterize <code>CGCtx</code>/<code>emit_intrinsic!</code> on a target; <code>ArraySpec</code> → <code>tt.divisibility</code> hints; hook the LMDB/CodeInstance cache; <code>@cuda backend=</code> dispatch</td>
+      <td>Medium</td>
+    </tr>
+    <tr>
+      <td><b>Compile driver + launchers</b></td>
+      <td>Pinned wheel via subprocess/PythonCall with TTIR-hash caching; CUDA.jl / AMDGPU.jl launch per metadata contract</td>
+      <td><span class="chip pass">Prototyped</span> (<span class="mono">TritonRun.jl</span>)</td>
+    </tr>
+  </table>
+  </div>
+
+  <h2>Per-target status</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>CUDA <span class="chip pass">Proven</span></h3>
+      <p>Real cuTile kernels running on H100 at Python-Triton parity; native tileiras comparison available since cuTile 0.3.2 added Hopper (toolchain ≥ 13.3).</p>
+    </div>
+    <div class="card">
+      <h3>AMD <span class="chip warn">Compiles</span></h3>
+      <p>Same wheel, same TTIR → gfx942 hsaco. Needs validation on real ROCm hardware; AMDGPU.jl launcher is symmetric to the CUDA one.</p>
+    </div>
+    <div class="card">
+      <h3>CPU <span class="chip risk">Open</span></h3>
+      <p>No triton-cpu in official wheels (source-build only, lags upstream). Alternatives: microsoft/triton-shared (ttir→linalg, bring your own pipeline) or the existing MLIRKernels-style <code>vector</code>+OpenMP lowering as a non-Triton fallback.</p>
+    </div>
+  </div>
+
+  <h2>Risks and mitigations</h2>
+  <ul>
+    <li><b>TTIR is not a stable format.</b> No versioning guarantee; op attributes drift across minor releases. Mitigation: pin an exact wheel per package release; keep the emitted op surface small; version-gate the emitter.</li>
+    <li><b>No Julia-side verification</b> with unregistered dialects — malformed IR surfaces as parse/verify errors inside <code>triton.compile</code>. Acceptable for machine-generated IR; a future <code>Triton_jll</code> (dialect + pass libs + C shim) upgrades to registered types, in-process verification, and a Python-free pipeline without changing any emitter code.</li>
+    <li><b>Printer/parser version skew.</b> MLIR 18 → triton 3.7.1 worked; generic syntax has been stable since LLVM 17's properties change, but re-validate on every wheel bump (one smoke test covers it).</li>
+    <li><b>Python at compile time.</b> Wheel-only, never at launch. The <code>Triton_jll</code> endgame removes it entirely if it becomes a problem.</li>
+    <li><b>Launch ABI drift.</b> Trailing scratch parameters changed across 3.x. The generated PTX signature is ground truth; derive the launcher from it per pinned version.</li>
+  </ul>
+
+  <h2>The full example-suite comparison</h2>
+  <p>All nine cuTile example workloads (v0.3.2, benchmark sizes, H100, min of 20 runs) through both backends — same kernel source, the Triton side via the <code>cufunction</code> shim with the dtype-gated TMA heuristic:</p>
+  <div class="table-scroll">
+  <table>
+    <tr><th>Example</th><th>Metric</th><th>tileiras</th><th>Triton backend</th><th>Ratio</th><th>Reference</th></tr>
+    <tr><td>fft (f32)</td><td>µs</td><td class="num">162</td><td class="num"><b>45</b></td><td class="num"><b>3.6×</b></td><td class="num">cuFFT 9 µs</td></tr>
+    <tr><td>layernorm fwd (f32)</td><td>GB/s</td><td class="num">1887</td><td class="num"><b>3841</b></td><td class="num"><b>2.04×</b></td><td class="num">—</td></tr>
+    <tr><td>softmax, single-tile variant</td><td>GB/s</td><td class="num">1727</td><td class="num"><b>2813</b></td><td class="num"><b>1.63×</b></td><td class="num">—</td></tr>
+    <tr><td>layernorm bwd</td><td>GB/s</td><td class="num">408</td><td class="num"><b>554</b></td><td class="num">1.36×</td><td class="num">—</td></tr>
+    <tr><td>matmul (f32/tf32, 4096³)</td><td>TFLOP/s</td><td class="num">65.0</td><td class="num">66.8</td><td class="num">1.03×</td><td class="num">cuBLAS 287</td></tr>
+    <tr><td>softmax, chunked gather</td><td>GB/s</td><td class="num">4180</td><td class="num">4203</td><td class="num">1.01×</td><td class="num">—</td></tr>
+    <tr><td>vadd (f32, 2²⁷)</td><td>GB/s</td><td class="num">3585</td><td class="num">3547</td><td class="num">0.99×</td><td class="num">SIMT 3032</td></tr>
+    <tr><td>transpose (f32)</td><td>GB/s</td><td class="num">3329</td><td class="num">3212</td><td class="num">0.96×</td><td class="num">SIMT 1022</td></tr>
+    <tr><td>fmha (f16)</td><td>TFLOP/s</td><td class="num">365</td><td class="num">291</td><td class="num">0.80×</td><td class="num">—</td></tr>
+    <tr><td>moe (f16)</td><td>TFLOP/s</td><td class="num">95</td><td class="num">52</td><td class="num">0.54×</td><td class="num">—</td></tr>
+    <tr><td>batchmatmul (f32)</td><td>TFLOP/s</td><td class="num">115</td><td class="num">58</td><td class="num">0.50×</td><td class="num">cuBLAS 209</td></tr>
+  </table>
+  </div>
+  <ul>
+    <li><b>Eight of eleven rows at or above native</b> — every memory-bound and reduction-heavy workload wins or ties, some dramatically (layernorm-fwd 2×, fft 3×).</li>
+    <li><b>The three losses are all tensor-core scheduling</b>, each with an understood cause: <b>fmha</b> loads with NegInf padding, which TMA cannot fill — Triton attention kernels instead zero-pad and mask scores arithmetically, a kernel-structure change (num_warps=8 alone took it 60→87 TF); <b>moe</b> is gather-routed (descriptor-gather is Blackwell-only in Triton); <b>batchmatmul</b> needs 3-D descriptors (TMA supports up to 5-D; the emitter currently gates at 2-D) and sits on Triton's weak tf32 pipeline.</li>
+    <li><b>num_warps is the next cheap lever:</b> the shim runs everything at 4 warps while tileiras schedules per kernel; a production backend needs per-kernel heuristics or Triton-style autotuning.</li>
+  </ul>
+
+  <h2>Anatomy of one kernel, every stage</h2>
+  <p>The complete lowering of a small-but-real kernel — a 64×128 row-sum (masked 2-D tile load, <code>tt.reduce</code> with a combiner region, kept-dim store) — from cuTile source to machine code. Kernel source:</p>
+  <pre><code>function rowsum(a, out, tm::Int, tn::Int)
+    bid = ct.bid(1)
+    t = ct.load(a, (bid, Int32(1)), (tm, tn))
+    s = sum(t; dims=2)
+    ct.store(out, (bid, Int32(1)), s)
+    return
+end   # specialized at tm=64, tn=128, Float32, num_warps=4, sm_90</code></pre>
+  <details open>
+    <summary><b>StructuredIRCode — cuTile front end (unchanged)</b> <span class="mono">(34 lines)</span> — Post-optimization SCI: view intrinsics, reduce with combiner, tokens (dropped by this backend)</summary>
+    <pre><code>StructuredIRCode(
+│ %24 = cuTile.MakeTokenNode()::cuTile.TokenType()
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:288 within `bid`
+│ %1  = cuTile.Intrinsics.get_tile_block_id(0)::cuTile.IntTile{Tuple{}, Int32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %3  = Base.getfield(_2, :ptr)::Ptr{Float32}
+│ %4  = Base.getfield(_2, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %5  = Base.getfield(_2, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:386 within `#load#207`
+│ %6  = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %3, %4, %5)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ %7  = cuTile.Intrinsics.make_partition_view(%6, (64, 128), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 2, Tuple{64, 128}}
+│ @ ntuple.jl:51 within `ntuple`
+│ %9  = Core.tuple(%1, 0)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ %10 = cuTile.Intrinsics.load_partition_view(%7, cuTile.nothing, cuTile.nothing, %9, %24)::cuTile.FloatTile{Tuple{64, 128}, Float32}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:1072 within `#mapreduce#243`
+│ %11 = Core.tuple(%10)::Tuple{cuTile.FloatTile{Tuple{64, 128}, Float32}}
+│ %12 = cuTile.Intrinsics.reduce(%11, 1, cuTile.+, (0.0f0,))::Tuple{cuTile.FloatTile{Tuple{64, 1}, Float32}}
+│ @ tuple.jl:33 within `getindex`
+│ %13 = boundscheck::cuTile.Tile{Bool, Tuple{}}
+│ %14 = Base.getfield(%12, 1, %13)::cuTile.FloatTile{Tuple{64, 1}, Float32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %17 = Base.getfield(_3, :ptr)::Ptr{Float32}
+│ %18 = Base.getfield(_3, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %19 = Base.getfield(_3, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:483 within `_store_reshaped`
+│ %20 = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %17, %18, %19)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:484 within `_store_reshaped`
+│ %21 = cuTile.Intrinsics.make_partition_view(%20, (64, 1), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 2, Tuple{64, 1}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:485 within `_store_reshaped`
+│ %22 = cuTile.Intrinsics.store_partition_view(%21, %14, cuTile.nothing, cuTile.nothing, %9, %24)::Nothing
+└ return nothing
+)</code></pre>
+  </details>
+  <details open>
+    <summary><b>TTIR — the Julia emitter's output</b> <span class="mono">(69 lines)</span> — Generic-form tt/arith/scf text; pointer+mask lowering of the partition views, tt.reduce region</summary>
+    <pre><code>module {
+  &quot;tt.func&quot;() ({
+  ^bb0(%arg0: !tt.ptr&lt;f32&gt;, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: i32, %arg5: !tt.ptr&lt;f32&gt;, %arg6: i32, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: i32):
+    %0 = &quot;tt.get_program_id&quot;() {axis = 0 : i32} : () -&gt; i32
+    %1 = &quot;arith.constant&quot;() {value = 64 : i32} : () -&gt; i32
+    %2 = &quot;arith.muli&quot;(%0, %1) : (i32, i32) -&gt; i32
+    %3 = &quot;tt.make_range&quot;() {end = 64 : i32, start = 0 : i32} : () -&gt; tensor&lt;64xi32&gt;
+    %4 = &quot;tt.splat&quot;(%2) : (i32) -&gt; tensor&lt;64xi32&gt;
+    %5 = &quot;arith.addi&quot;(%4, %3) : (tensor&lt;64xi32&gt;, tensor&lt;64xi32&gt;) -&gt; tensor&lt;64xi32&gt;
+    %6 = &quot;tt.expand_dims&quot;(%5) {axis = 0 : i32} : (tensor&lt;64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %7 = &quot;tt.broadcast&quot;(%6) : (tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;128x64xi32&gt;
+    %8 = &quot;tt.splat&quot;(%arg1) : (i32) -&gt; tensor&lt;128x64xi32&gt;
+    %9 = &quot;arith.cmpi&quot;(%7, %8) {predicate = 2 : i64} : (tensor&lt;128x64xi32&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64xi1&gt;
+    %10 = &quot;tt.splat&quot;(%arg3) : (i32) -&gt; tensor&lt;128x64xi32&gt;
+    %11 = &quot;arith.muli&quot;(%7, %10) : (tensor&lt;128x64xi32&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64xi32&gt;
+    %12 = &quot;arith.constant&quot;() {value = 0 : i32} : () -&gt; i32
+    %13 = &quot;arith.constant&quot;() {value = 128 : i32} : () -&gt; i32
+    %14 = &quot;arith.muli&quot;(%12, %13) : (i32, i32) -&gt; i32
+    %15 = &quot;tt.make_range&quot;() {end = 128 : i32, start = 0 : i32} : () -&gt; tensor&lt;128xi32&gt;
+    %16 = &quot;tt.splat&quot;(%14) : (i32) -&gt; tensor&lt;128xi32&gt;
+    %17 = &quot;arith.addi&quot;(%16, %15) : (tensor&lt;128xi32&gt;, tensor&lt;128xi32&gt;) -&gt; tensor&lt;128xi32&gt;
+    %18 = &quot;tt.expand_dims&quot;(%17) {axis = 1 : i32} : (tensor&lt;128xi32&gt;) -&gt; tensor&lt;128x1xi32&gt;
+    %19 = &quot;tt.broadcast&quot;(%18) : (tensor&lt;128x1xi32&gt;) -&gt; tensor&lt;128x64xi32&gt;
+    %20 = &quot;tt.splat&quot;(%arg2) : (i32) -&gt; tensor&lt;128x64xi32&gt;
+    %21 = &quot;arith.cmpi&quot;(%19, %20) {predicate = 2 : i64} : (tensor&lt;128x64xi32&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64xi1&gt;
+    %22 = &quot;arith.andi&quot;(%9, %21) : (tensor&lt;128x64xi1&gt;, tensor&lt;128x64xi1&gt;) -&gt; tensor&lt;128x64xi1&gt;
+    %23 = &quot;tt.splat&quot;(%arg4) : (i32) -&gt; tensor&lt;128x64xi32&gt;
+    %24 = &quot;arith.muli&quot;(%19, %23) : (tensor&lt;128x64xi32&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64xi32&gt;
+    %25 = &quot;arith.addi&quot;(%11, %24) : (tensor&lt;128x64xi32&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64xi32&gt;
+    %26 = &quot;tt.splat&quot;(%arg0) : (!tt.ptr&lt;f32&gt;) -&gt; tensor&lt;128x64x!tt.ptr&lt;f32&gt;&gt;
+    %27 = &quot;tt.addptr&quot;(%26, %25) : (tensor&lt;128x64x!tt.ptr&lt;f32&gt;&gt;, tensor&lt;128x64xi32&gt;) -&gt; tensor&lt;128x64x!tt.ptr&lt;f32&gt;&gt;
+    %28 = &quot;tt.load&quot;(%27, %22) {operandSegmentSizes = array&lt;i32: 1, 1, 0&gt;} : (tensor&lt;128x64x!tt.ptr&lt;f32&gt;&gt;, tensor&lt;128x64xi1&gt;) -&gt; tensor&lt;128x64xf32&gt;
+    %29 = &quot;tt.reduce&quot;(%28) ({
+    ^bb0(%arg11: f32, %arg12: f32):
+      %58 = &quot;arith.addf&quot;(%arg11, %arg12) : (f32, f32) -&gt; f32
+      &quot;tt.reduce.return&quot;(%58) : (f32) -&gt; ()
+    }) {axis = 0 : i32} : (tensor&lt;128x64xf32&gt;) -&gt; tensor&lt;64xf32&gt;
+    %30 = &quot;tt.expand_dims&quot;(%29) {axis = 0 : i32} : (tensor&lt;64xf32&gt;) -&gt; tensor&lt;1x64xf32&gt;
+    %31 = &quot;arith.constant&quot;() {value = 64 : i32} : () -&gt; i32
+    %32 = &quot;arith.muli&quot;(%0, %31) : (i32, i32) -&gt; i32
+    %33 = &quot;tt.make_range&quot;() {end = 64 : i32, start = 0 : i32} : () -&gt; tensor&lt;64xi32&gt;
+    %34 = &quot;tt.splat&quot;(%32) : (i32) -&gt; tensor&lt;64xi32&gt;
+    %35 = &quot;arith.addi&quot;(%34, %33) : (tensor&lt;64xi32&gt;, tensor&lt;64xi32&gt;) -&gt; tensor&lt;64xi32&gt;
+    %36 = &quot;tt.expand_dims&quot;(%35) {axis = 0 : i32} : (tensor&lt;64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %37 = &quot;tt.broadcast&quot;(%36) : (tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %38 = &quot;tt.splat&quot;(%arg6) : (i32) -&gt; tensor&lt;1x64xi32&gt;
+    %39 = &quot;arith.cmpi&quot;(%37, %38) {predicate = 2 : i64} : (tensor&lt;1x64xi32&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi1&gt;
+    %40 = &quot;tt.splat&quot;(%arg8) : (i32) -&gt; tensor&lt;1x64xi32&gt;
+    %41 = &quot;arith.muli&quot;(%37, %40) : (tensor&lt;1x64xi32&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %42 = &quot;arith.constant&quot;() {value = 0 : i32} : () -&gt; i32
+    %43 = &quot;arith.constant&quot;() {value = 1 : i32} : () -&gt; i32
+    %44 = &quot;arith.muli&quot;(%42, %43) : (i32, i32) -&gt; i32
+    %45 = &quot;tt.make_range&quot;() {end = 1 : i32, start = 0 : i32} : () -&gt; tensor&lt;1xi32&gt;
+    %46 = &quot;tt.splat&quot;(%44) : (i32) -&gt; tensor&lt;1xi32&gt;
+    %47 = &quot;arith.addi&quot;(%46, %45) : (tensor&lt;1xi32&gt;, tensor&lt;1xi32&gt;) -&gt; tensor&lt;1xi32&gt;
+    %48 = &quot;tt.expand_dims&quot;(%47) {axis = 1 : i32} : (tensor&lt;1xi32&gt;) -&gt; tensor&lt;1x1xi32&gt;
+    %49 = &quot;tt.broadcast&quot;(%48) : (tensor&lt;1x1xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %50 = &quot;tt.splat&quot;(%arg7) : (i32) -&gt; tensor&lt;1x64xi32&gt;
+    %51 = &quot;arith.cmpi&quot;(%49, %50) {predicate = 2 : i64} : (tensor&lt;1x64xi32&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi1&gt;
+    %52 = &quot;arith.andi&quot;(%39, %51) : (tensor&lt;1x64xi1&gt;, tensor&lt;1x64xi1&gt;) -&gt; tensor&lt;1x64xi1&gt;
+    %53 = &quot;tt.splat&quot;(%arg9) : (i32) -&gt; tensor&lt;1x64xi32&gt;
+    %54 = &quot;arith.muli&quot;(%49, %53) : (tensor&lt;1x64xi32&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %55 = &quot;arith.addi&quot;(%41, %54) : (tensor&lt;1x64xi32&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64xi32&gt;
+    %56 = &quot;tt.splat&quot;(%arg5) : (!tt.ptr&lt;f32&gt;) -&gt; tensor&lt;1x64x!tt.ptr&lt;f32&gt;&gt;
+    %57 = &quot;tt.addptr&quot;(%56, %55) : (tensor&lt;1x64x!tt.ptr&lt;f32&gt;&gt;, tensor&lt;1x64xi32&gt;) -&gt; tensor&lt;1x64x!tt.ptr&lt;f32&gt;&gt;
+    &quot;tt.store&quot;(%57, %30, %52) : (tensor&lt;1x64x!tt.ptr&lt;f32&gt;&gt;, tensor&lt;1x64xf32&gt;, tensor&lt;1x64xi1&gt;) -&gt; ()
+    &quot;tt.return&quot;() : () -&gt; ()
+  }) {function_type = (!tt.ptr&lt;f32&gt;, i32, i32, i32, i32, !tt.ptr&lt;f32&gt;, i32, i32, i32, i32, i32) -&gt; (), sym_name = &quot;rowsum&quot;, sym_visibility = &quot;public&quot;} : () -&gt; ()
+}</code></pre>
+  </details>
+  <details>
+    <summary><b>TTGIR — Triton's GPU dialect</b> <span class="mono">(101 lines)</span> — Layouts appear: #blocked distributions of tile elements over 4 warps × 32 lanes</summary>
+    <pre><code>#blocked = #ttg.blocked&lt;{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [2, 2], order = [1, 0]}&gt;
+#loc2 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:8)
+#loc3 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:29)
+#loc4 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:41)
+#loc5 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:53)
+#loc6 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:65)
+#loc7 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:77)
+#loc8 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:98)
+#loc9 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:110)
+#loc10 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:122)
+#loc11 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:134)
+#loc12 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:146)
+#loc37 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:34:10)
+#loc38 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:34:23)
+module attributes {&quot;ttg.num-ctas&quot; = 1 : i32, &quot;ttg.num-warps&quot; = 4 : i32, ttg.target = &quot;cuda:90&quot;, &quot;ttg.threads-per-warp&quot; = 32 : i32} {
+  tt.func public @rowsum(%arg0: !tt.ptr&lt;f32&gt; loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:8), %arg1: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:29), %arg2: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:41), %arg3: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:53), %arg4: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:65), %arg5: !tt.ptr&lt;f32&gt; loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:77), %arg6: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:98), %arg7: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:110), %arg8: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:122), %arg9: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:134), %arg10: i32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:3:146)) {
+    %c64_i32 = arith.constant 64 : i32 loc(#loc13)
+    %cst = arith.constant dense&lt;0&gt; : tensor&lt;1x64xi32, #blocked&gt; loc(#loc13)
+    %0 = tt.get_program_id x : i32 loc(#loc14)
+    %1 = arith.muli %0, %c64_i32 : i32 loc(#loc15)
+    %2 = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor&lt;64xi32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; loc(#loc16)
+    %3 = tt.splat %1 : i32 -&gt; tensor&lt;64xi32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; loc(#loc17)
+    %4 = arith.addi %3, %2 : tensor&lt;64xi32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; loc(#loc18)
+    %5 = tt.expand_dims %4 {axis = 0 : i32} : tensor&lt;64xi32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; -&gt; tensor&lt;1x64xi32, #blocked&gt; loc(#loc19)
+    %6 = tt.broadcast %5 : tensor&lt;1x64xi32, #blocked&gt; -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc20)
+    %7 = tt.splat %arg1 : i32 -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc21)
+    %8 = arith.cmpi slt, %6, %7 : tensor&lt;128x64xi32, #blocked&gt; loc(#loc22)
+    %9 = tt.splat %arg3 : i32 -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc23)
+    %10 = arith.muli %6, %9 : tensor&lt;128x64xi32, #blocked&gt; loc(#loc24)
+    %11 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor&lt;128xi32, #ttg.slice&lt;{dim = 1, parent = #blocked}&gt;&gt; loc(#loc25)
+    %12 = tt.expand_dims %11 {axis = 1 : i32} : tensor&lt;128xi32, #ttg.slice&lt;{dim = 1, parent = #blocked}&gt;&gt; -&gt; tensor&lt;128x1xi32, #blocked&gt; loc(#loc25)
+    %13 = tt.broadcast %12 : tensor&lt;128x1xi32, #blocked&gt; -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc26)
+    %14 = tt.splat %arg2 : i32 -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc27)
+    %15 = arith.cmpi slt, %13, %14 : tensor&lt;128x64xi32, #blocked&gt; loc(#loc28)
+    %16 = arith.andi %8, %15 : tensor&lt;128x64xi1, #blocked&gt; loc(#loc29)
+    %17 = tt.splat %arg4 : i32 -&gt; tensor&lt;128x64xi32, #blocked&gt; loc(#loc30)
+    %18 = arith.muli %13, %17 : tensor&lt;128x64xi32, #blocked&gt; loc(#loc31)
+    %19 = arith.addi %10, %18 : tensor&lt;128x64xi32, #blocked&gt; loc(#loc32)
+    %20 = tt.splat %arg0 : !tt.ptr&lt;f32&gt; -&gt; tensor&lt;128x64x!tt.ptr&lt;f32&gt;, #blocked&gt; loc(#loc33)
+    %21 = tt.addptr %20, %19 : tensor&lt;128x64x!tt.ptr&lt;f32&gt;, #blocked&gt;, tensor&lt;128x64xi32, #blocked&gt; loc(#loc34)
+    %22 = tt.load %21, %16 : tensor&lt;128x64x!tt.ptr&lt;f32&gt;, #blocked&gt; loc(#loc35)
+    %23 = &quot;tt.reduce&quot;(%22) &lt;{axis = 0 : i32}&gt; ({
+    ^bb0(%arg11: f32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:34:10), %arg12: f32 loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:34:23)):
+      %34 = arith.addf %arg11, %arg12 : f32 loc(#loc39)
+      tt.reduce.return %34 : f32 loc(#loc40)
+    }) : (tensor&lt;128x64xf32, #blocked&gt;) -&gt; tensor&lt;64xf32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; loc(#loc36)
+    %24 = tt.expand_dims %23 {axis = 0 : i32} : tensor&lt;64xf32, #ttg.slice&lt;{dim = 0, parent = #blocked}&gt;&gt; -&gt; tensor&lt;1x64xf32, #blocked&gt; loc(#loc41)
+    %25 = tt.splat %arg6 : i32 -&gt; tensor&lt;1x64xi32, #blocked&gt; loc(#loc42)
+    %26 = arith.cmpi slt, %5, %25 : tensor&lt;1x64xi32, #blocked&gt; loc(#loc43)
+    %27 = tt.splat %arg8 : i32 -&gt; tensor&lt;1x64xi32, #blocked&gt; loc(#loc44)
+    %28 = arith.muli %5, %27 : tensor&lt;1x64xi32, #blocked&gt; loc(#loc45)
+    %29 = tt.splat %arg7 : i32 -&gt; tensor&lt;1x64xi32, #blocked&gt; loc(#loc46)
+    %30 = arith.cmpi sgt, %29, %cst : tensor&lt;1x64xi32, #blocked&gt; loc(#loc47)
+    %31 = arith.andi %26, %30 : tensor&lt;1x64xi1, #blocked&gt; loc(#loc48)
+    %32 = tt.splat %arg5 : !tt.ptr&lt;f32&gt; -&gt; tensor&lt;1x64x!tt.ptr&lt;f32&gt;, #blocked&gt; loc(#loc49)
+    %33 = tt.addptr %32, %28 : tensor&lt;1x64x!tt.ptr&lt;f32&gt;, #blocked&gt;, tensor&lt;1x64xi32, #blocked&gt; loc(#loc50)
+    tt.store %33, %24, %31 : tensor&lt;1x64x!tt.ptr&lt;f32&gt;, #blocked&gt; loc(#loc51)
+    tt.return loc(#loc52)
+  } loc(#loc1)
+} loc(#loc)
+#loc = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:1:1)
+#loc1 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:2:3)
+#loc13 = loc(unknown)
+#loc14 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:4:10)
+#loc15 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:6:10)
+#loc16 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:7:10)
+#loc17 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:8:10)
+#loc18 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:9:10)
+#loc19 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:10:10)
+#loc20 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:11:10)
+#loc21 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:12:10)
+#loc22 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:13:10)
+#loc23 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:14:11)
+#loc24 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:15:11)
+#loc25 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:22:11)
+#loc26 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:23:11)
+#loc27 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:24:11)
+#loc28 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:25:11)
+#loc29 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:26:11)
+#loc30 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:27:11)
+#loc31 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:28:11)
+#loc32 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:29:11)
+#loc33 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:30:11)
+#loc34 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:31:11)
+#loc35 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:32:11)
+#loc36 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:33:11)
+#loc39 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:35:13)
+#loc40 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:36:7)
+#loc41 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:38:11)
+#loc42 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:46:11)
+#loc43 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:47:11)
+#loc44 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:48:11)
+#loc45 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:49:11)
+#loc46 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:58:11)
+#loc47 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:59:11)
+#loc48 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:60:11)
+#loc49 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:64:11)
+#loc50 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:65:11)
+#loc51 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:66:5)
+#loc52 = loc(&quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;:67:5)
+</code></pre>
+  </details>
+  <details>
+    <summary><b>LLVM IR — after convert-triton-gpu-to-llvm + LLVM opt</b> <span class="mono">(743 lines)</span> — NVVM intrinsics, shuffles for the cross-lane reduction, predicated loads</summary>
+    <pre><code>; ModuleID = &#x27;LLVMDialectModule&#x27;
+source_filename = &quot;LLVMDialectModule&quot;
+target datalayout = &quot;e-p3:32:32-p4:32:32-p5:32:32-p6:32:32-p7:32:32-i64:64-i128:128-i256:256-v16:16-v32:32-n16:32:64&quot;
+
+@global_smem = external addrspace(3) global [0 x i8], align 16
+
+; Function Attrs: nounwind
+define ptx_kernel void @rowsum(ptr addrspace(1) %0, i32 %1, i32 %2, i32 %3, i32 %4, ptr addrspace(1) %5, i32 %6, i32 %7, i32 %8, i32 %9, i32 %10, ptr addrspace(1) readnone captures(none) %11, ptr addrspace(1) readnone captures(none) %12) local_unnamed_addr #0 !dbg !4 {
+  %14 = tail call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x(), !dbg !12
+  %15 = shl i32 %14, 6, !dbg !13
+  %16 = tail call i32 @llvm.nvvm.read.ptx.sreg.tid.x(), !dbg !14
+  %17 = and i32 %16, 127, !dbg !14
+  %18 = and i32 %16, 63, !dbg !14
+  %19 = or disjoint i32 %15, %18, !dbg !15
+  %20 = icmp slt i32 %19, %1, !dbg !16
+  %21 = mul i32 %3, %19, !dbg !17
+  %22 = lshr i32 %16, 6, !dbg !18
+  %.lobit = and i32 %22, 1, !dbg !18
+  %23 = or disjoint i32 %.lobit, 2, !dbg !18
+  %24 = or disjoint i32 %.lobit, 4, !dbg !18
+  %25 = or disjoint i32 %.lobit, 6, !dbg !18
+  %26 = or disjoint i32 %.lobit, 8, !dbg !18
+  %27 = or disjoint i32 %.lobit, 10, !dbg !18
+  %28 = or disjoint i32 %.lobit, 12, !dbg !18
+  %29 = or i32 %22, 14, !dbg !18
+  %30 = or disjoint i32 %.lobit, 16, !dbg !18
+  %31 = or disjoint i32 %.lobit, 18, !dbg !18
+  %32 = or disjoint i32 %.lobit, 20, !dbg !18
+  %33 = or disjoint i32 %.lobit, 22, !dbg !18
+  %34 = or disjoint i32 %.lobit, 24, !dbg !18
+  %35 = or disjoint i32 %.lobit, 26, !dbg !18
+  %36 = or disjoint i32 %.lobit, 28, !dbg !18
+  %37 = or i32 %22, 30, !dbg !18
+  %38 = or disjoint i32 %.lobit, 32, !dbg !18
+  %39 = or disjoint i32 %.lobit, 34, !dbg !18
+  %40 = or disjoint i32 %.lobit, 36, !dbg !18
+  %41 = or disjoint i32 %.lobit, 38, !dbg !18
+  %42 = or disjoint i32 %.lobit, 40, !dbg !18
+  %43 = or disjoint i32 %.lobit, 42, !dbg !18
+  %44 = or disjoint i32 %.lobit, 44, !dbg !18
+  %45 = or i32 %22, 46, !dbg !18
+  %46 = or disjoint i32 %.lobit, 48, !dbg !18
+  %47 = or disjoint i32 %.lobit, 50, !dbg !18
+  %48 = or disjoint i32 %.lobit, 52, !dbg !18
+  %49 = or disjoint i32 %.lobit, 54, !dbg !18
+  %50 = or disjoint i32 %.lobit, 56, !dbg !18
+  %51 = or disjoint i32 %.lobit, 58, !dbg !18
+  %52 = or disjoint i32 %.lobit, 60, !dbg !18
+  %53 = or i32 %22, 62, !dbg !18
+  %54 = or disjoint i32 %.lobit, 64, !dbg !18
+  %55 = or disjoint i32 %.lobit, 66, !dbg !18
+  %56 = or disjoint i32 %.lobit, 68, !dbg !18
+  %57 = or disjoint i32 %.lobit, 70, !dbg !18
+  %58 = or disjoint i32 %.lobit, 72, !dbg !18
+  %59 = or disjoint i32 %.lobit, 74, !dbg !18
+  %60 = or disjoint i32 %.lobit, 76, !dbg !18
+  %61 = or i32 %22, 78, !dbg !18
+  %62 = or disjoint i32 %.lobit, 80, !dbg !18
+  %63 = or disjoint i32 %.lobit, 82, !dbg !18
+  %64 = or disjoint i32 %.lobit, 84, !dbg !18
+  %65 = or disjoint i32 %.lobit, 86, !dbg !18
+  %66 = or disjoint i32 %.lobit, 88, !dbg !18
+  %67 = or disjoint i32 %.lobit, 90, !dbg !18
+  %68 = or disjoint i32 %.lobit, 92, !dbg !18
+  %69 = or i32 %22, 94, !dbg !18
+  %70 = or disjoint i32 %.lobit, 96, !dbg !18
+  %71 = or disjoint i32 %.lobit, 98, !dbg !18
+  %72 = or disjoint i32 %.lobit, 100, !dbg !18
+  %73 = or disjoint i32 %.lobit, 102, !dbg !18
+  %74 = or disjoint i32 %.lobit, 104, !dbg !18
+  %75 = or disjoint i32 %.lobit, 106, !dbg !18
+  %76 = or disjoint i32 %.lobit, 108, !dbg !18
+  %77 = or i32 %22, 110, !dbg !18
+  %78 = or disjoint i32 %.lobit, 112, !dbg !18
+  %79 = or disjoint i32 %.lobit, 114, !dbg !18
+  %80 = or disjoint i32 %.lobit, 116, !dbg !18
+  %81 = or disjoint i32 %.lobit, 118, !dbg !18
+  %82 = or disjoint i32 %.lobit, 120, !dbg !18
+  %83 = or disjoint i32 %.lobit, 122, !dbg !18
+  %84 = or disjoint i32 %.lobit, 124, !dbg !18
+  %85 = or i32 %22, 126, !dbg !18
+  %86 = icmp slt i32 %.lobit, %2, !dbg !19
+  %87 = icmp slt i32 %23, %2, !dbg !19
+  %88 = icmp slt i32 %24, %2, !dbg !19
+  %89 = icmp slt i32 %25, %2, !dbg !19
+  %90 = icmp slt i32 %26, %2, !dbg !19
+  %91 = icmp slt i32 %27, %2, !dbg !19
+  %92 = icmp slt i32 %28, %2, !dbg !19
+  %93 = icmp slt i32 %29, %2, !dbg !19
+  %94 = icmp slt i32 %30, %2, !dbg !19
+  %95 = icmp slt i32 %31, %2, !dbg !19
+  %96 = icmp slt i32 %32, %2, !dbg !19
+  %97 = icmp slt i32 %33, %2, !dbg !19
+  %98 = icmp slt i32 %34, %2, !dbg !19
+  %99 = icmp slt i32 %35, %2, !dbg !19
+  %100 = icmp slt i32 %36, %2, !dbg !19
+  %101 = icmp slt i32 %37, %2, !dbg !19
+  %102 = icmp slt i32 %38, %2, !dbg !19
+  %103 = icmp slt i32 %39, %2, !dbg !19
+  %104 = icmp slt i32 %40, %2, !dbg !19
+  %105 = icmp slt i32 %41, %2, !dbg !19
+  %106 = icmp slt i32 %42, %2, !dbg !19
+  %107 = icmp slt i32 %43, %2, !dbg !19
+  %108 = icmp slt i32 %44, %2, !dbg !19
+  %109 = icmp slt i32 %45, %2, !dbg !19
+  %110 = icmp slt i32 %46, %2, !dbg !19
+  %111 = icmp slt i32 %47, %2, !dbg !19
+  %112 = icmp slt i32 %48, %2, !dbg !19
+  %113 = icmp slt i32 %49, %2, !dbg !19
+  %114 = icmp slt i32 %50, %2, !dbg !19
+  %115 = icmp slt i32 %51, %2, !dbg !19
+  %116 = icmp slt i32 %52, %2, !dbg !19
+  %117 = icmp slt i32 %53, %2, !dbg !19
+  %118 = icmp slt i32 %54, %2, !dbg !19
+  %119 = icmp slt i32 %55, %2, !dbg !19
+  %120 = icmp slt i32 %56, %2, !dbg !19
+  %121 = icmp slt i32 %57, %2, !dbg !19
+  %122 = icmp slt i32 %58, %2, !dbg !19
+  %123 = icmp slt i32 %59, %2, !dbg !19
+  %124 = icmp slt i32 %60, %2, !dbg !19
+  %125 = icmp slt i32 %61, %2, !dbg !19
+  %126 = icmp slt i32 %62, %2, !dbg !19
+  %127 = icmp slt i32 %63, %2, !dbg !19
+  %128 = icmp slt i32 %64, %2, !dbg !19
+  %129 = icmp slt i32 %65, %2, !dbg !19
+  %130 = icmp slt i32 %66, %2, !dbg !19
+  %131 = icmp slt i32 %67, %2, !dbg !19
+  %132 = icmp slt i32 %68, %2, !dbg !19
+  %133 = icmp slt i32 %69, %2, !dbg !19
+  %134 = icmp slt i32 %70, %2, !dbg !19
+  %135 = icmp slt i32 %71, %2, !dbg !19
+  %136 = icmp slt i32 %72, %2, !dbg !19
+  %137 = icmp slt i32 %73, %2, !dbg !19
+  %138 = icmp slt i32 %74, %2, !dbg !19
+  %139 = icmp slt i32 %75, %2, !dbg !19
+  %140 = icmp slt i32 %76, %2, !dbg !19
+  %141 = icmp slt i32 %77, %2, !dbg !19
+  %142 = icmp slt i32 %78, %2, !dbg !19
+  %143 = icmp slt i32 %79, %2, !dbg !19
+  %144 = icmp slt i32 %80, %2, !dbg !19
+  %145 = icmp slt i32 %81, %2, !dbg !19
+  %146 = icmp slt i32 %82, %2, !dbg !19
+  %147 = icmp slt i32 %83, %2, !dbg !19
+  %148 = icmp slt i32 %84, %2, !dbg !19
+  %149 = icmp slt i32 %85, %2, !dbg !19
+  %150 = and i1 %20, %86, !dbg !20
+  %151 = and i1 %20, %87, !dbg !20
+  %152 = and i1 %20, %88, !dbg !20
+  %153 = and i1 %20, %89, !dbg !20
+  %154 = and i1 %20, %90, !dbg !20
+  %155 = and i1 %20, %91, !dbg !20
+  %156 = and i1 %20, %92, !dbg !20
+  %157 = and i1 %20, %93, !dbg !20
+  %158 = and i1 %20, %94, !dbg !20
+  %159 = and i1 %20, %95, !dbg !20
+  %160 = and i1 %20, %96, !dbg !20
+  %161 = and i1 %20, %97, !dbg !20
+  %162 = and i1 %20, %98, !dbg !20
+  %163 = and i1 %20, %99, !dbg !20
+  %164 = and i1 %20, %100, !dbg !20
+  %165 = and i1 %20, %101, !dbg !20
+  %166 = and i1 %20, %102, !dbg !20
+  %167 = and i1 %20, %103, !dbg !20
+  %168 = and i1 %20, %104, !dbg !20
+  %169 = and i1 %20, %105, !dbg !20
+  %170 = and i1 %20, %106, !dbg !20
+  %171 = and i1 %20, %107, !dbg !20
+  %172 = and i1 %20, %108, !dbg !20
+  %173 = and i1 %20, %109, !dbg !20
+  %174 = and i1 %20, %110, !dbg !20
+  %175 = and i1 %20, %111, !dbg !20
+  %176 = and i1 %20, %112, !dbg !20
+  %177 = and i1 %20, %113, !dbg !20
+  %178 = and i1 %20, %114, !dbg !20
+  %179 = and i1 %20, %115, !dbg !20
+  %180 = and i1 %20, %116, !dbg !20
+  %181 = and i1 %20, %117, !dbg !20
+  %182 = and i1 %20, %118, !dbg !20
+  %183 = and i1 %20, %119, !dbg !20
+  %184 = and i1 %20, %120, !dbg !20
+  %185 = and i1 %20, %121, !dbg !20
+  %186 = and i1 %20, %122, !dbg !20
+  %187 = and i1 %20, %123, !dbg !20
+  %188 = and i1 %20, %124, !dbg !20
+  %189 = and i1 %20, %125, !dbg !20
+  %190 = and i1 %20, %126, !dbg !20
+  %191 = and i1 %20, %127, !dbg !20
+  %192 = and i1 %20, %128, !dbg !20
+  %193 = and i1 %20, %129, !dbg !20
+  %194 = and i1 %20, %130, !dbg !20
+  %195 = and i1 %20, %131, !dbg !20
+  %196 = and i1 %20, %132, !dbg !20
+  %197 = and i1 %20, %133, !dbg !20
+  %198 = and i1 %20, %134, !dbg !20
+  %199 = and i1 %20, %135, !dbg !20
+  %200 = and i1 %20, %136, !dbg !20
+  %201 = and i1 %20, %137, !dbg !20
+  %202 = and i1 %20, %138, !dbg !20
+  %203 = and i1 %20, %139, !dbg !20
+  %204 = and i1 %20, %140, !dbg !20
+  %205 = and i1 %20, %141, !dbg !20
+  %206 = and i1 %20, %142, !dbg !20
+  %207 = and i1 %20, %143, !dbg !20
+  %208 = and i1 %20, %144, !dbg !20
+  %209 = and i1 %20, %145, !dbg !20
+  %210 = and i1 %20, %146, !dbg !20
+  %211 = and i1 %20, %147, !dbg !20
+  %212 = and i1 %20, %148, !dbg !20
+  %213 = and i1 %20, %149, !dbg !20
+  %214 = mul nuw nsw i32 %4, %.lobit, !dbg !21
+  %215 = mul i32 %4, %23, !dbg !21
+  %216 = mul i32 %4, %24, !dbg !21
+  %217 = mul i32 %4, %25, !dbg !21
+  %218 = mul i32 %4, %26, !dbg !21
+  %219 = mul i32 %4, %27, !dbg !21
+  %220 = mul i32 %4, %28, !dbg !21
+  %221 = mul i32 %4, %29, !dbg !21
+  %222 = mul i32 %4, %30, !dbg !21
+  %223 = mul i32 %4, %31, !dbg !21
+  %224 = mul i32 %4, %32, !dbg !21
+  %225 = mul i32 %4, %33, !dbg !21
+  %226 = mul i32 %4, %34, !dbg !21
+  %227 = mul i32 %4, %35, !dbg !21
+  %228 = mul i32 %4, %36, !dbg !21
+  %229 = mul i32 %4, %37, !dbg !21
+  %230 = mul i32 %4, %38, !dbg !21
+  %231 = mul i32 %4, %39, !dbg !21
+  %232 = mul i32 %4, %40, !dbg !21
+  %233 = mul i32 %4, %41, !dbg !21
+  %234 = mul i32 %4, %42, !dbg !21
+  %235 = mul i32 %4, %43, !dbg !21
+  %236 = mul i32 %4, %44, !dbg !21
+  %237 = mul i32 %4, %45, !dbg !21
+  %238 = mul i32 %4, %46, !dbg !21
+  %239 = mul i32 %4, %47, !dbg !21
+  %240 = mul i32 %4, %48, !dbg !21
+  %241 = mul i32 %4, %49, !dbg !21
+  %242 = mul i32 %4, %50, !dbg !21
+  %243 = mul i32 %4, %51, !dbg !21
+  %244 = mul i32 %4, %52, !dbg !21
+  %245 = mul i32 %4, %53, !dbg !21
+  %246 = mul i32 %4, %54, !dbg !21
+  %247 = mul i32 %4, %55, !dbg !21
+  %248 = mul i32 %4, %56, !dbg !21
+  %249 = mul i32 %4, %57, !dbg !21
+  %250 = mul i32 %4, %58, !dbg !21
+  %251 = mul i32 %4, %59, !dbg !21
+  %252 = mul i32 %4, %60, !dbg !21
+  %253 = mul i32 %4, %61, !dbg !21
+  %254 = mul i32 %4, %62, !dbg !21
+  %255 = mul i32 %4, %63, !dbg !21
+  %256 = mul i32 %4, %64, !dbg !21
+  %257 = mul i32 %4, %65, !dbg !21
+  %258 = mul i32 %4, %66, !dbg !21
+  %259 = mul i32 %4, %67, !dbg !21
+  %260 = mul i32 %4, %68, !dbg !21
+  %261 = mul i32 %4, %69, !dbg !21
+  %262 = mul i32 %4, %70, !dbg !21
+  %263 = mul i32 %4, %71, !dbg !21
+  %264 = mul i32 %4, %72, !dbg !21
+  %265 = mul i32 %4, %73, !dbg !21
+  %266 = mul i32 %4, %74, !dbg !21
+  %267 = mul i32 %4, %75, !dbg !21
+  %268 = mul i32 %4, %76, !dbg !21
+  %269 = mul i32 %4, %77, !dbg !21
+  %270 = mul i32 %4, %78, !dbg !21
+  %271 = mul i32 %4, %79, !dbg !21
+  %272 = mul i32 %4, %80, !dbg !21
+  %273 = mul i32 %4, %81, !dbg !21
+  %274 = mul i32 %4, %82, !dbg !21
+  %275 = mul i32 %4, %83, !dbg !21
+  %276 = mul i32 %4, %84, !dbg !21
+  %277 = mul i32 %4, %85, !dbg !21
+  %278 = add i32 %214, %21, !dbg !22
+  %279 = add i32 %215, %21, !dbg !22
+  %280 = add i32 %216, %21, !dbg !22
+  %281 = add i32 %217, %21, !dbg !22
+  %282 = add i32 %218, %21, !dbg !22
+  %283 = add i32 %219, %21, !dbg !22
+  %284 = add i32 %220, %21, !dbg !22
+  %285 = add i32 %221, %21, !dbg !22
+  %286 = add i32 %222, %21, !dbg !22
+  %287 = add i32 %223, %21, !dbg !22
+  %288 = add i32 %224, %21, !dbg !22
+  %289 = add i32 %225, %21, !dbg !22
+  %290 = add i32 %226, %21, !dbg !22
+  %291 = add i32 %227, %21, !dbg !22
+  %292 = add i32 %228, %21, !dbg !22
+  %293 = add i32 %229, %21, !dbg !22
+  %294 = add i32 %230, %21, !dbg !22
+  %295 = add i32 %231, %21, !dbg !22
+  %296 = add i32 %232, %21, !dbg !22
+  %297 = add i32 %233, %21, !dbg !22
+  %298 = add i32 %234, %21, !dbg !22
+  %299 = add i32 %235, %21, !dbg !22
+  %300 = add i32 %236, %21, !dbg !22
+  %301 = add i32 %237, %21, !dbg !22
+  %302 = add i32 %238, %21, !dbg !22
+  %303 = add i32 %239, %21, !dbg !22
+  %304 = add i32 %240, %21, !dbg !22
+  %305 = add i32 %241, %21, !dbg !22
+  %306 = add i32 %242, %21, !dbg !22
+  %307 = add i32 %243, %21, !dbg !22
+  %308 = add i32 %244, %21, !dbg !22
+  %309 = add i32 %245, %21, !dbg !22
+  %310 = add i32 %246, %21, !dbg !22
+  %311 = add i32 %247, %21, !dbg !22
+  %312 = add i32 %248, %21, !dbg !22
+  %313 = add i32 %249, %21, !dbg !22
+  %314 = add i32 %250, %21, !dbg !22
+  %315 = add i32 %251, %21, !dbg !22
+  %316 = add i32 %252, %21, !dbg !22
+  %317 = add i32 %253, %21, !dbg !22
+  %318 = add i32 %254, %21, !dbg !22
+  %319 = add i32 %255, %21, !dbg !22
+  %320 = add i32 %256, %21, !dbg !22
+  %321 = add i32 %257, %21, !dbg !22
+  %322 = add i32 %258, %21, !dbg !22
+  %323 = add i32 %259, %21, !dbg !22
+  %324 = add i32 %260, %21, !dbg !22
+  %325 = add i32 %261, %21, !dbg !22
+  %326 = add i32 %262, %21, !dbg !22
+  %327 = add i32 %263, %21, !dbg !22
+  %328 = add i32 %264, %21, !dbg !22
+  %329 = add i32 %265, %21, !dbg !22
+  %330 = add i32 %266, %21, !dbg !22
+  %331 = add i32 %267, %21, !dbg !22
+  %332 = add i32 %268, %21, !dbg !22
+  %333 = add i32 %269, %21, !dbg !22
+  %334 = add i32 %270, %21, !dbg !22
+  %335 = add i32 %271, %21, !dbg !22
+  %336 = add i32 %272, %21, !dbg !22
+  %337 = add i32 %273, %21, !dbg !22
+  %338 = add i32 %274, %21, !dbg !22
+  %339 = add i32 %275, %21, !dbg !22
+  %340 = add i32 %276, %21, !dbg !22
+  %341 = add i32 %277, %21, !dbg !22
+  %342 = sext i32 %278 to i64, !dbg !23
+  %343 = getelementptr float, ptr addrspace(1) %0, i64 %342, !dbg !23
+  %344 = sext i32 %279 to i64, !dbg !23
+  %345 = getelementptr float, ptr addrspace(1) %0, i64 %344, !dbg !23
+  %346 = sext i32 %280 to i64, !dbg !23
+  %347 = getelementptr float, ptr addrspace(1) %0, i64 %346, !dbg !23
+  %348 = sext i32 %281 to i64, !dbg !23
+  %349 = getelementptr float, ptr addrspace(1) %0, i64 %348, !dbg !23
+  %350 = sext i32 %282 to i64, !dbg !23
+  %351 = getelementptr float, ptr addrspace(1) %0, i64 %350, !dbg !23
+  %352 = sext i32 %283 to i64, !dbg !23
+  %353 = getelementptr float, ptr addrspace(1) %0, i64 %352, !dbg !23
+  %354 = sext i32 %284 to i64, !dbg !23
+  %355 = getelementptr float, ptr addrspace(1) %0, i64 %354, !dbg !23
+  %356 = sext i32 %285 to i64, !dbg !23
+  %357 = getelementptr float, ptr addrspace(1) %0, i64 %356, !dbg !23
+  %358 = sext i32 %286 to i64, !dbg !23
+  %359 = getelementptr float, ptr addrspace(1) %0, i64 %358, !dbg !23
+  %360 = sext i32 %287 to i64, !dbg !23
+  %361 = getelementptr float, ptr addrspace(1) %0, i64 %360, !dbg !23
+  %362 = sext i32 %288 to i64, !dbg !23
+  %363 = getelementptr float, ptr addrspace(1) %0, i64 %362, !dbg !23
+  %364 = sext i32 %289 to i64, !dbg !23
+  %365 = getelementptr float, ptr addrspace(1) %0, i64 %364, !dbg !23
+  %366 = sext i32 %290 to i64, !dbg !23
+  %367 = getelementptr float, ptr addrspace(1) %0, i64 %366, !dbg !23
+  %368 = sext i32 %291 to i64, !dbg !23
+  %369 = getelementptr float, ptr addrspace(1) %0, i64 %368, !dbg !23
+  %370 = sext i32 %292 to i64, !dbg !23
+  %371 = getelementptr float, ptr addrspace(1) %0, i64 %370, !dbg !23
+  %372 = sext i32 %293 to i64, !dbg !23
+  %373 = getelementptr float, ptr addrspace(1) %0, i64 %372, !dbg !23
+  %374 = sext i32 %294 to i64, !dbg !23
+  %375 = getelementptr float, ptr addrspace(1) %0, i64 %374, !dbg !23
+  %376 = sext i32 %295 to i64, !dbg !23
+  %377 = getelementptr float, ptr addrspace(1) %0, i64 %376, !dbg !23
+  %378 = sext i32 %296 to i64, !dbg !23
+  %379 = getelementptr float, ptr addrspace(1) %0, i64 %378, !dbg !23
+  %380 = sext i32 %297 to i64, !dbg !23
+  %381 = getelementptr float, ptr addrspace(1) %0, i64 %380, !dbg !23
+  %382 = sext i32 %298 to i64, !dbg !23
+  %383 = getelementptr float, ptr addrspace(1) %0, i64 %382, !dbg !23
+  %384 = sext i32 %299 to i64, !dbg !23
+  %385 = getelementptr float, ptr addrspace(1) %0, i64 %384, !dbg !23
+  %386 = sext i32 %300 to i64, !dbg !23
+  %387 = getelementptr float, ptr addrspace(1) %0, i64 %386, !dbg !23
+  %388 = sext i32 %301 to i64, !dbg !23
+  %389 = getelementptr float, ptr addrspace(1) %0, i64 %388, !dbg !23
+  %390 = sext i32 %302 to i64, !dbg !23
+  %391 = getelementptr float, ptr addrspace(1) %0, i64 %390, !dbg !23
+  %392 = sext i32 %303 to i64, !dbg !23
+  %393 = getelementptr float, ptr addrspace(1) %0, i64 %392, !dbg !23
+  %394 = sext i32 %304 to i64, !dbg !23
+  %395 = getelementptr float, ptr addrspace(1) %0, i64 %394, !dbg !23
+  %396 = sext i32 %305 to i64, !dbg !23
+  %397 = getelementptr float, ptr addrspace(1) %0, i64 %396, !dbg !23
+  %398 = sext i32 %306 to i64, !dbg !23
+  %399 = getelementptr float, ptr addrspace(1) %0, i64 %398, !dbg !23
+  %400 = sext i32 %307 to i64, !dbg !23
+  %401 = getelementptr float, ptr addrspace(1) %0, i64 %400, !dbg !23
+  %402 = sext i32 %308 to i64, !dbg !23
+  %403 = getelementptr float, ptr addrspace(1) %0, i64 %402, !dbg !23
+  %404 = sext i32 %309 to i64, !dbg !23
+  %405 = getelementptr float, ptr addrspace(1) %0, i64 %404, !dbg !23
+  %406 = sext i32 %310 to i64, !dbg !23
+  %407 = getelementptr float, ptr addrspace(1) %0, i64 %406, !dbg !23
+  %408 = sext i32 %311 to i64, !dbg !23
+  %409 = getelementptr float, ptr addrspace(1) %0, i64 %408, !dbg !23
+  %410 = sext i32 %312 to i64, !dbg !23
+  %411 = getelementptr float, ptr addrspace(1) %0, i64 %410, !dbg !23
+  %412 = sext i32 %313 to i64, !dbg !23
+  %413 = getelementptr float, ptr addrspace(1) %0, i64 %412, !dbg !23
+  %414 = sext i32 %314 to i64, !dbg !23
+  %415 = getelementptr float, ptr addrspace(1) %0, i64 %414, !dbg !23
+  %416 = sext i32 %315 to i64, !dbg !23
+  %417 = getelementptr float, ptr addrspace(1) %0, i64 %416, !dbg !23
+  %418 = sext i32 %316 to i64, !dbg !23
+  %419 = getelementptr float, ptr addrspace(1) %0, i64 %418, !dbg !23
+  %420 = sext i32 %317 to i64, !dbg !23
+  %421 = getelementptr float, ptr addrspace(1) %0, i64 %420, !dbg !23
+  %422 = sext i32 %318 to i64, !dbg !23
+  %423 = getelementptr float, ptr addrspace(1) %0, i64 %422, !dbg !23
+  %424 = sext i32 %319 to i64, !dbg !23
+  %425 = getelementptr float, ptr addrspace(1) %0, i64 %424, !dbg !23
+  %426 = sext i32 %320 to i64, !dbg !23
+  %427 = getelementptr float, ptr addrspace(1) %0, i64 %426, !dbg !23
+  %428 = sext i32 %321 to i64, !dbg !23
+  %429 = getelementptr float, ptr addrspace(1) %0, i64 %428, !dbg !23
+  %430 = sext i32 %322 to i64, !dbg !23
+  %431 = getelementptr float, ptr addrspace(1) %0, i64 %430, !dbg !23
+  %432 = sext i32 %323 to i64, !dbg !23
+  %433 = getelementptr float, ptr addrspace(1) %0, i64 %432, !dbg !23
+  %434 = sext i32 %324 to i64, !dbg !23
+  %435 = getelementptr float, ptr addrspace(1) %0, i64 %434, !dbg !23
+  %436 = sext i32 %325 to i64, !dbg !23
+  %437 = getelementptr float, ptr addrspace(1) %0, i64 %436, !dbg !23
+  %438 = sext i32 %326 to i64, !dbg !23
+  %439 = getelementptr float, ptr addrspace(1) %0, i64 %438, !dbg !23
+  %440 = sext i32 %327 to i64, !dbg !23
+  %441 = getelementptr float, ptr addrspace(1) %0, i64 %440, !dbg !23
+  %442 = sext i32 %328 to i64, !dbg !23
+  %443 = getelementptr float, ptr addrspace(1) %0, i64 %442, !dbg !23
+  %444 = sext i32 %329 to i64, !dbg !23
+  %445 = getelementptr float, ptr addrspace(1) %0, i64 %444, !dbg !23
+  %446 = sext i32 %330 to i64, !dbg !23
+  %447 = getelementptr float, ptr addrspace(1) %0, i64 %446, !dbg !23
+  %448 = sext i32 %331 to i64, !dbg !23
+  %449 = getelementptr float, ptr addrspace(1) %0, i64 %448, !dbg !23
+  %450 = sext i32 %332 to i64, !dbg !23
+  %451 = getelementptr float, ptr addrspace(1) %0, i64 %450, !dbg !23
+  %452 = sext i32 %333 to i64, !dbg !23
+  %453 = getelementptr float, ptr addrspace(1) %0, i64 %452, !dbg !23
+  %454 = sext i32 %334 to i64, !dbg !23
+  %455 = getelementptr float, ptr addrspace(1) %0, i64 %454, !dbg !23
+  %456 = sext i32 %335 to i64, !dbg !23
+  %457 = getelementptr float, ptr addrspace(1) %0, i64 %456, !dbg !23
+  %458 = sext i32 %336 to i64, !dbg !23
+  %459 = getelementptr float, ptr addrspace(1) %0, i64 %458, !dbg !23
+  %460 = sext i32 %337 to i64, !dbg !23
+  %461 = getelementptr float, ptr addrspace(1) %0, i64 %460, !dbg !23
+  %462 = sext i32 %338 to i64, !dbg !23
+  %463 = getelementptr float, ptr addrspace(1) %0, i64 %462, !dbg !23
+  %464 = sext i32 %339 to i64, !dbg !23
+  %465 = getelementptr float, ptr addrspace(1) %0, i64 %464, !dbg !23
+  %466 = sext i32 %340 to i64, !dbg !23
+  %467 = getelementptr float, ptr addrspace(1) %0, i64 %466, !dbg !23
+  %468 = sext i32 %341 to i64, !dbg !23
+  %469 = getelementptr float, ptr addrspace(1) %0, i64 %468, !dbg !23
+  %470 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %343, i1 %150) #4, !dbg !24
+  %471 = bitcast i32 %470 to float, !dbg !24
+  %472 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %345, i1 %151) #4, !dbg !24
+  %473 = bitcast i32 %472 to float, !dbg !24
+  %474 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %347, i1 %152) #4, !dbg !24
+  %475 = bitcast i32 %474 to float, !dbg !24
+  %476 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %349, i1 %153) #4, !dbg !24
+  %477 = bitcast i32 %476 to float, !dbg !24
+  %478 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %351, i1 %154) #4, !dbg !24
+  %479 = bitcast i32 %478 to float, !dbg !24
+  %480 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %353, i1 %155) #4, !dbg !24
+  %481 = bitcast i32 %480 to float, !dbg !24
+  %482 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %355, i1 %156) #4, !dbg !24
+  %483 = bitcast i32 %482 to float, !dbg !24
+  %484 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %357, i1 %157) #4, !dbg !24
+  %485 = bitcast i32 %484 to float, !dbg !24
+  %486 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %359, i1 %158) #4, !dbg !24
+  %487 = bitcast i32 %486 to float, !dbg !24
+  %488 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %361, i1 %159) #4, !dbg !24
+  %489 = bitcast i32 %488 to float, !dbg !24
+  %490 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %363, i1 %160) #4, !dbg !24
+  %491 = bitcast i32 %490 to float, !dbg !24
+  %492 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %365, i1 %161) #4, !dbg !24
+  %493 = bitcast i32 %492 to float, !dbg !24
+  %494 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %367, i1 %162) #4, !dbg !24
+  %495 = bitcast i32 %494 to float, !dbg !24
+  %496 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %369, i1 %163) #4, !dbg !24
+  %497 = bitcast i32 %496 to float, !dbg !24
+  %498 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %371, i1 %164) #4, !dbg !24
+  %499 = bitcast i32 %498 to float, !dbg !24
+  %500 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %373, i1 %165) #4, !dbg !24
+  %501 = bitcast i32 %500 to float, !dbg !24
+  %502 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %375, i1 %166) #4, !dbg !24
+  %503 = bitcast i32 %502 to float, !dbg !24
+  %504 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %377, i1 %167) #4, !dbg !24
+  %505 = bitcast i32 %504 to float, !dbg !24
+  %506 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %379, i1 %168) #4, !dbg !24
+  %507 = bitcast i32 %506 to float, !dbg !24
+  %508 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %381, i1 %169) #4, !dbg !24
+  %509 = bitcast i32 %508 to float, !dbg !24
+  %510 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %383, i1 %170) #4, !dbg !24
+  %511 = bitcast i32 %510 to float, !dbg !24
+  %512 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %385, i1 %171) #4, !dbg !24
+  %513 = bitcast i32 %512 to float, !dbg !24
+  %514 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %387, i1 %172) #4, !dbg !24
+  %515 = bitcast i32 %514 to float, !dbg !24
+  %516 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %389, i1 %173) #4, !dbg !24
+  %517 = bitcast i32 %516 to float, !dbg !24
+  %518 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %391, i1 %174) #4, !dbg !24
+  %519 = bitcast i32 %518 to float, !dbg !24
+  %520 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %393, i1 %175) #4, !dbg !24
+  %521 = bitcast i32 %520 to float, !dbg !24
+  %522 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %395, i1 %176) #4, !dbg !24
+  %523 = bitcast i32 %522 to float, !dbg !24
+  %524 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %397, i1 %177) #4, !dbg !24
+  %525 = bitcast i32 %524 to float, !dbg !24
+  %526 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %399, i1 %178) #4, !dbg !24
+  %527 = bitcast i32 %526 to float, !dbg !24
+  %528 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %401, i1 %179) #4, !dbg !24
+  %529 = bitcast i32 %528 to float, !dbg !24
+  %530 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %403, i1 %180) #4, !dbg !24
+  %531 = bitcast i32 %530 to float, !dbg !24
+  %532 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %405, i1 %181) #4, !dbg !24
+  %533 = bitcast i32 %532 to float, !dbg !24
+  %534 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %407, i1 %182) #4, !dbg !24
+  %535 = bitcast i32 %534 to float, !dbg !24
+  %536 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %409, i1 %183) #4, !dbg !24
+  %537 = bitcast i32 %536 to float, !dbg !24
+  %538 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %411, i1 %184) #4, !dbg !24
+  %539 = bitcast i32 %538 to float, !dbg !24
+  %540 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %413, i1 %185) #4, !dbg !24
+  %541 = bitcast i32 %540 to float, !dbg !24
+  %542 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %415, i1 %186) #4, !dbg !24
+  %543 = bitcast i32 %542 to float, !dbg !24
+  %544 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %417, i1 %187) #4, !dbg !24
+  %545 = bitcast i32 %544 to float, !dbg !24
+  %546 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %419, i1 %188) #4, !dbg !24
+  %547 = bitcast i32 %546 to float, !dbg !24
+  %548 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %421, i1 %189) #4, !dbg !24
+  %549 = bitcast i32 %548 to float, !dbg !24
+  %550 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %423, i1 %190) #4, !dbg !24
+  %551 = bitcast i32 %550 to float, !dbg !24
+  %552 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %425, i1 %191) #4, !dbg !24
+  %553 = bitcast i32 %552 to float, !dbg !24
+  %554 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %427, i1 %192) #4, !dbg !24
+  %555 = bitcast i32 %554 to float, !dbg !24
+  %556 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %429, i1 %193) #4, !dbg !24
+  %557 = bitcast i32 %556 to float, !dbg !24
+  %558 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %431, i1 %194) #4, !dbg !24
+  %559 = bitcast i32 %558 to float, !dbg !24
+  %560 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %433, i1 %195) #4, !dbg !24
+  %561 = bitcast i32 %560 to float, !dbg !24
+  %562 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %435, i1 %196) #4, !dbg !24
+  %563 = bitcast i32 %562 to float, !dbg !24
+  %564 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %437, i1 %197) #4, !dbg !24
+  %565 = bitcast i32 %564 to float, !dbg !24
+  %566 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %439, i1 %198) #4, !dbg !24
+  %567 = bitcast i32 %566 to float, !dbg !24
+  %568 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %441, i1 %199) #4, !dbg !24
+  %569 = bitcast i32 %568 to float, !dbg !24
+  %570 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %443, i1 %200) #4, !dbg !24
+  %571 = bitcast i32 %570 to float, !dbg !24
+  %572 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %445, i1 %201) #4, !dbg !24
+  %573 = bitcast i32 %572 to float, !dbg !24
+  %574 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %447, i1 %202) #4, !dbg !24
+  %575 = bitcast i32 %574 to float, !dbg !24
+  %576 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %449, i1 %203) #4, !dbg !24
+  %577 = bitcast i32 %576 to float, !dbg !24
+  %578 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %451, i1 %204) #4, !dbg !24
+  %579 = bitcast i32 %578 to float, !dbg !24
+  %580 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %453, i1 %205) #4, !dbg !24
+  %581 = bitcast i32 %580 to float, !dbg !24
+  %582 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %455, i1 %206) #4, !dbg !24
+  %583 = bitcast i32 %582 to float, !dbg !24
+  %584 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %457, i1 %207) #4, !dbg !24
+  %585 = bitcast i32 %584 to float, !dbg !24
+  %586 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %459, i1 %208) #4, !dbg !24
+  %587 = bitcast i32 %586 to float, !dbg !24
+  %588 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %461, i1 %209) #4, !dbg !24
+  %589 = bitcast i32 %588 to float, !dbg !24
+  %590 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %463, i1 %210) #4, !dbg !24
+  %591 = bitcast i32 %590 to float, !dbg !24
+  %592 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %465, i1 %211) #4, !dbg !24
+  %593 = bitcast i32 %592 to float, !dbg !24
+  %594 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %467, i1 %212) #4, !dbg !24
+  %595 = bitcast i32 %594 to float, !dbg !24
+  %596 = tail call i32 asm sideeffect &quot;mov.u32 $0, 0x0;\0A\09@$2 ld.global.b32 { $0 }, [ $1 + 0 ];&quot;, &quot;=r,l,b&quot;(ptr addrspace(1) %469, i1 %213) #4, !dbg !24
+  %597 = bitcast i32 %596 to float, !dbg !24
+  %598 = fadd float %471, %473, !dbg !25
+  %599 = fadd float %598, %475, !dbg !25
+  %600 = fadd float %599, %477, !dbg !25
+  %601 = fadd float %600, %479, !dbg !25
+  %602 = fadd float %601, %481, !dbg !25
+  %603 = fadd float %602, %483, !dbg !25
+  %604 = fadd float %603, %485, !dbg !25
+  %605 = fadd float %604, %487, !dbg !25
+  %606 = fadd float %605, %489, !dbg !25
+  %607 = fadd float %606, %491, !dbg !25
+  %608 = fadd float %607, %493, !dbg !25
+  %609 = fadd float %608, %495, !dbg !25
+  %610 = fadd float %609, %497, !dbg !25
+  %611 = fadd float %610, %499, !dbg !25
+  %612 = fadd float %611, %501, !dbg !25
+  %613 = fadd float %612, %503, !dbg !25
+  %614 = fadd float %613, %505, !dbg !25
+  %615 = fadd float %614, %507, !dbg !25
+  %616 = fadd float %615, %509, !dbg !25
+  %617 = fadd float %616, %511, !dbg !25
+  %618 = fadd float %617, %513, !dbg !25
+  %619 = fadd float %618, %515, !dbg !25
+  %620 = fadd float %619, %517, !dbg !25
+  %621 = fadd float %620, %519, !dbg !25
+  %622 = fadd float %621, %521, !dbg !25
+  %623 = fadd float %622, %523, !dbg !25
+  %624 = fadd float %623, %525, !dbg !25
+  %625 = fadd float %624, %527, !dbg !25
+  %626 = fadd float %625, %529, !dbg !25
+  %627 = fadd float %626, %531, !dbg !25
+  %628 = fadd float %627, %533, !dbg !25
+  %629 = fadd float %628, %535, !dbg !25
+  %630 = fadd float %629, %537, !dbg !25
+  %631 = fadd float %630, %539, !dbg !25
+  %632 = fadd float %631, %541, !dbg !25
+  %633 = fadd float %632, %543, !dbg !25
+  %634 = fadd float %633, %545, !dbg !25
+  %635 = fadd float %634, %547, !dbg !25
+  %636 = fadd float %635, %549, !dbg !25
+  %637 = fadd float %636, %551, !dbg !25
+  %638 = fadd float %637, %553, !dbg !25
+  %639 = fadd float %638, %555, !dbg !25
+  %640 = fadd float %639, %557, !dbg !25
+  %641 = fadd float %640, %559, !dbg !25
+  %642 = fadd float %641, %561, !dbg !25
+  %643 = fadd float %642, %563, !dbg !25
+  %644 = fadd float %643, %565, !dbg !25
+  %645 = fadd float %644, %567, !dbg !25
+  %646 = fadd float %645, %569, !dbg !25
+  %647 = fadd float %646, %571, !dbg !25
+  %648 = fadd float %647, %573, !dbg !25
+  %649 = fadd float %648, %575, !dbg !25
+  %650 = fadd float %649, %577, !dbg !25
+  %651 = fadd float %650, %579, !dbg !25
+  %652 = fadd float %651, %581, !dbg !25
+  %653 = fadd float %652, %583, !dbg !25
+  %654 = fadd float %653, %585, !dbg !25
+  %655 = fadd float %654, %587, !dbg !25
+  %656 = fadd float %655, %589, !dbg !25
+  %657 = fadd float %656, %591, !dbg !25
+  %658 = fadd float %657, %593, !dbg !25
+  %659 = fadd float %658, %595, !dbg !25
+  %660 = fadd float %659, %597, !dbg !25
+  %.idx = shl nuw nsw i32 %18, 3, !dbg !26
+  %661 = getelementptr i8, ptr addrspace(3) @global_smem, i32 %.idx, !dbg !26
+  %662 = getelementptr float, ptr addrspace(3) %661, i32 %.lobit, !dbg !26
+  %663 = bitcast float %660 to &lt;1 x i32&gt;, !dbg !26
+  tail call void asm sideeffect &quot;@$2 st.shared.b32 [ $0 + 0 ], $1;&quot;, &quot;r,r,b&quot;(ptr addrspace(3) %662, &lt;1 x i32&gt; %663, i1 true) #4, !dbg !26
+  tail call void @llvm.nvvm.barrier.cta.sync.aligned.all(i32 0), !dbg !26
+  %664 = getelementptr float, ptr addrspace(3) @global_smem, i32 %17, !dbg !26
+  %665 = tail call i32 asm sideeffect &quot;@$2 ld.shared.b32 $0, [ $1 + 0 ];&quot;, &quot;=r,r,b&quot;(ptr addrspace(3) %664, i1 true) #4, !dbg !26
+  %666 = bitcast i32 %665 to float, !dbg !26
+  %667 = tail call i32 @llvm.nvvm.shfl.sync.bfly.i32(i32 -1, i32 %665, i32 1, i32 31), !dbg !26
+  %668 = bitcast i32 %667 to float, !dbg !26
+  %669 = fadd float %666, %668, !dbg !25
+  %670 = and i32 %16, 1, !dbg !26
+  %671 = icmp eq i32 %670, 0, !dbg !26
+  %672 = bitcast float %669 to &lt;1 x i32&gt;, !dbg !26
+  tail call void asm sideeffect &quot;@$2 st.shared.b32 [ $0 + 0 ], $1;&quot;, &quot;r,r,b&quot;(ptr addrspace(3) %664, &lt;1 x i32&gt; %672, i1 %671) #4, !dbg !26
+  tail call void @llvm.nvvm.barrier.cta.sync.aligned.all(i32 0), !dbg !26
+  %673 = load i32, ptr addrspace(3) %661, align 8, !dbg !26
+  %674 = icmp slt i32 %19, %6, !dbg !27
+  %675 = mul i32 %8, %19, !dbg !28
+  %676 = icmp sgt i32 %7, 0, !dbg !29
+  %677 = and i1 %674, %676, !dbg !30
+  %678 = sext i32 %675 to i64, !dbg !31
+  %679 = getelementptr float, ptr addrspace(1) %5, i64 %678, !dbg !31
+  %680 = and i32 %16, 64, !dbg !32
+  %681 = icmp eq i32 %680, 0, !dbg !32
+  %682 = and i1 %681, %677, !dbg !32
+  tail call void asm sideeffect &quot;@$2 st.global.b32 [ $1 + 0 ], { $0 };&quot;, &quot;r,l,b&quot;(i32 %673, ptr addrspace(1) %679, i1 %682) #4, !dbg !32
+  ret void, !dbg !33
+}
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef range(i32 0, 2147483647) i32 @llvm.nvvm.read.ptx.sreg.ctaid.x() #1
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef range(i32 0, 1024) i32 @llvm.nvvm.read.ptx.sreg.tid.x() #1
+
+; Function Attrs: convergent nocallback nounwind
+declare void @llvm.nvvm.barrier.cta.sync.aligned.all(i32) #2
+
+; Function Attrs: convergent nocallback nounwind memory(inaccessiblemem: readwrite)
+declare i32 @llvm.nvvm.shfl.sync.bfly.i32(i32, i32, i32, i32) #3
+
+attributes #0 = { nounwind &quot;nvvm.reqntid&quot;=&quot;128&quot; }
+attributes #1 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #2 = { convergent nocallback nounwind }
+attributes #3 = { convergent nocallback nounwind memory(inaccessiblemem: readwrite) }
+attributes #4 = { nounwind }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!2, !3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: &quot;triton&quot;, isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!1 = !DIFile(filename: &quot;rowsum.ttir&quot;, directory: &quot;/tmp/jl_eFtPRT&quot;)
+!2 = !{i32 2, !&quot;Debug Info Version&quot;, i32 3}
+!3 = !{i32 4, !&quot;nvvm-reflect-ftz&quot;, i32 1}
+!4 = distinct !DISubprogram(name: &quot;rowsum&quot;, linkageName: &quot;rowsum&quot;, scope: !1, file: !1, line: 2, type: !5, scopeLine: 2, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!5 = !DISubroutineType(cc: DW_CC_normal, types: !6)
+!6 = !{null, !7, !9, !9, !9, !9, !7, !9, !9, !9, !9, !9, !10, !10}
+!7 = !DIDerivedType(tag: DW_TAG_pointer_type, name: &quot;pointer&quot;, baseType: !8, size: 64, dwarfAddressSpace: 1)
+!8 = !DIBasicType(name: &quot;float&quot;, size: 32, encoding: DW_ATE_float)
+!9 = !DIBasicType(name: &quot;int&quot;, size: 32, encoding: DW_ATE_signed)
+!10 = !DIDerivedType(tag: DW_TAG_pointer_type, name: &quot;pointer&quot;, baseType: !11, size: 64, dwarfAddressSpace: 1)
+!11 = !DIBasicType(name: &quot;unknown_type&quot;, encoding: DW_ATE_signed)
+!12 = !DILocation(line: 4, column: 10, scope: !4)
+!13 = !DILocation(line: 6, column: 10, scope: !4)
+!14 = !DILocation(line: 7, column: 10, scope: !4)
+!15 = !DILocation(line: 9, column: 10, scope: !4)
+!16 = !DILocation(line: 13, column: 10, scope: !4)
+!17 = !DILocation(line: 15, column: 11, scope: !4)
+!18 = !DILocation(line: 22, column: 11, scope: !4)
+!19 = !DILocation(line: 25, column: 11, scope: !4)
+!20 = !DILocation(line: 26, column: 11, scope: !4)
+!21 = !DILocation(line: 28, column: 11, scope: !4)
+!22 = !DILocation(line: 29, column: 11, scope: !4)
+!23 = !DILocation(line: 31, column: 11, scope: !4)
+!24 = !DILocation(line: 32, column: 11, scope: !4)
+!25 = !DILocation(line: 35, column: 13, scope: !4)
+!26 = !DILocation(line: 33, column: 11, scope: !4)
+!27 = !DILocation(line: 47, column: 11, scope: !4)
+!28 = !DILocation(line: 49, column: 11, scope: !4)
+!29 = !DILocation(line: 59, column: 11, scope: !4)
+!30 = !DILocation(line: 60, column: 11, scope: !4)
+!31 = !DILocation(line: 65, column: 11, scope: !4)
+!32 = !DILocation(line: 66, column: 5, scope: !4)
+!33 = !DILocation(line: 67, column: 5, scope: !4)
+</code></pre>
+  </details>
+  <details>
+    <summary><b>PTX — LLVM NVPTX backend</b> <span class="mono">(833 lines)</span> — What ptxas receives</summary>
+    <pre><code>//
+// Generated by LLVM NVPTX Back-End
+//
+
+.version 8.7
+.target sm_90a
+.address_size 64
+
+	// .globl	rowsum                  // -- Begin function rowsum
+.extern .shared .align 16 .b8 global_smem[];
+                                        // @rowsum
+.visible .entry rowsum(
+	.param .u64 .ptr .global .align 1 rowsum_param_0,
+	.param .u32 rowsum_param_1,
+	.param .u32 rowsum_param_2,
+	.param .u32 rowsum_param_3,
+	.param .u32 rowsum_param_4,
+	.param .u64 .ptr .global .align 1 rowsum_param_5,
+	.param .u32 rowsum_param_6,
+	.param .u32 rowsum_param_7,
+	.param .u32 rowsum_param_8,
+	.param .u32 rowsum_param_9,
+	.param .u32 rowsum_param_10,
+	.param .u64 .ptr .global .align 1 rowsum_param_11,
+	.param .u64 .ptr .global .align 1 rowsum_param_12
+)
+.reqntid 128
+{
+	.reg .pred 	%p&lt;138&gt;;
+	.reg .b32 	%r&lt;291&gt;;
+	.reg .b64 	%rd&lt;68&gt;;
+	.loc	1 2 0                           // rowsum.ttir:2:0
+$L__func_begin0:
+	.loc	1 2 0                           // rowsum.ttir:2:0
+
+// %bb.0:
+	ld.param.b64 	%rd66, [rowsum_param_0];
+	ld.param.b32 	%r71, [rowsum_param_1];
+$L__tmp0:
+	.loc	1 4 10                          // rowsum.ttir:4:10
+	mov.u32 	%r72, %ctaid.x;
+	.loc	1 6 10                          // rowsum.ttir:6:10
+	shl.b32 	%r73, %r72, 6;
+	ld.param.b32 	%r74, [rowsum_param_2];
+	ld.param.b32 	%r75, [rowsum_param_3];
+	.loc	1 7 10                          // rowsum.ttir:7:10
+	mov.u32 	%r76, %tid.x;
+	and.b32 	%r77, %r76, 127;
+	ld.param.b32 	%r78, [rowsum_param_4];
+	and.b32 	%r79, %r76, 63;
+	ld.param.b64 	%rd67, [rowsum_param_5];
+	.loc	1 9 10                          // rowsum.ttir:9:10
+	or.b32 	%r80, %r73, %r79;
+	ld.param.b32 	%r81, [rowsum_param_6];
+	.loc	1 13 10                         // rowsum.ttir:13:10
+	setp.lt.s32 	%p68, %r80, %r71;
+	ld.param.b32 	%r82, [rowsum_param_7];
+	.loc	1 15 11                         // rowsum.ttir:15:11
+	mul.lo.s32 	%r83, %r75, %r80;
+	ld.param.b32 	%r84, [rowsum_param_8];
+	.loc	1 22 11                         // rowsum.ttir:22:11
+	shr.u32 	%r85, %r76, 6;
+	bfe.u32 	%r86, %r76, 6, 1;
+	or.b32 	%r87, %r86, 2;
+	or.b32 	%r88, %r86, 4;
+	or.b32 	%r89, %r86, 6;
+	or.b32 	%r90, %r86, 8;
+	or.b32 	%r91, %r86, 10;
+	or.b32 	%r92, %r86, 12;
+	or.b32 	%r93, %r85, 14;
+	or.b32 	%r94, %r86, 16;
+	or.b32 	%r95, %r86, 18;
+	or.b32 	%r96, %r86, 20;
+	or.b32 	%r97, %r86, 22;
+	or.b32 	%r98, %r86, 24;
+	or.b32 	%r99, %r86, 26;
+	or.b32 	%r100, %r86, 28;
+	or.b32 	%r101, %r85, 30;
+	or.b32 	%r102, %r86, 32;
+	or.b32 	%r103, %r86, 34;
+	or.b32 	%r104, %r86, 36;
+	or.b32 	%r105, %r86, 38;
+	or.b32 	%r106, %r86, 40;
+	or.b32 	%r107, %r86, 42;
+	or.b32 	%r108, %r86, 44;
+	or.b32 	%r109, %r85, 46;
+	or.b32 	%r110, %r86, 48;
+	or.b32 	%r111, %r86, 50;
+	or.b32 	%r112, %r86, 52;
+	or.b32 	%r113, %r86, 54;
+	or.b32 	%r114, %r86, 56;
+	or.b32 	%r115, %r86, 58;
+	or.b32 	%r116, %r86, 60;
+	or.b32 	%r117, %r85, 62;
+	or.b32 	%r118, %r86, 64;
+	or.b32 	%r119, %r86, 66;
+	or.b32 	%r120, %r86, 68;
+	or.b32 	%r121, %r86, 70;
+	or.b32 	%r122, %r86, 72;
+	or.b32 	%r123, %r86, 74;
+	or.b32 	%r124, %r86, 76;
+	or.b32 	%r125, %r85, 78;
+	or.b32 	%r126, %r86, 80;
+	or.b32 	%r127, %r86, 82;
+	or.b32 	%r128, %r86, 84;
+	or.b32 	%r129, %r86, 86;
+	or.b32 	%r130, %r86, 88;
+	or.b32 	%r131, %r86, 90;
+	or.b32 	%r132, %r86, 92;
+	or.b32 	%r133, %r85, 94;
+	or.b32 	%r134, %r86, 96;
+	or.b32 	%r135, %r86, 98;
+	or.b32 	%r136, %r86, 100;
+	or.b32 	%r137, %r86, 102;
+	or.b32 	%r138, %r86, 104;
+	or.b32 	%r139, %r86, 106;
+	or.b32 	%r140, %r86, 108;
+	or.b32 	%r141, %r85, 110;
+	or.b32 	%r142, %r86, 112;
+	or.b32 	%r143, %r86, 114;
+	or.b32 	%r144, %r86, 116;
+	or.b32 	%r145, %r86, 118;
+	or.b32 	%r146, %r86, 120;
+	or.b32 	%r147, %r86, 122;
+	or.b32 	%r148, %r86, 124;
+	or.b32 	%r149, %r85, 126;
+	.loc	1 25 11                         // rowsum.ttir:25:11
+	setp.lt.s32 	%p69, %r86, %r74;
+	setp.lt.s32 	%p70, %r87, %r74;
+	setp.lt.s32 	%p71, %r88, %r74;
+	setp.lt.s32 	%p72, %r89, %r74;
+	setp.lt.s32 	%p73, %r90, %r74;
+	setp.lt.s32 	%p74, %r91, %r74;
+	setp.lt.s32 	%p75, %r92, %r74;
+	setp.lt.s32 	%p76, %r93, %r74;
+	setp.lt.s32 	%p77, %r94, %r74;
+	setp.lt.s32 	%p78, %r95, %r74;
+	setp.lt.s32 	%p79, %r96, %r74;
+	setp.lt.s32 	%p80, %r97, %r74;
+	setp.lt.s32 	%p81, %r98, %r74;
+	setp.lt.s32 	%p82, %r99, %r74;
+	setp.lt.s32 	%p83, %r100, %r74;
+	setp.lt.s32 	%p84, %r101, %r74;
+	setp.lt.s32 	%p85, %r102, %r74;
+	setp.lt.s32 	%p86, %r103, %r74;
+	setp.lt.s32 	%p87, %r104, %r74;
+	setp.lt.s32 	%p88, %r105, %r74;
+	setp.lt.s32 	%p89, %r106, %r74;
+	setp.lt.s32 	%p90, %r107, %r74;
+	setp.lt.s32 	%p91, %r108, %r74;
+	setp.lt.s32 	%p92, %r109, %r74;
+	setp.lt.s32 	%p93, %r110, %r74;
+	setp.lt.s32 	%p94, %r111, %r74;
+	setp.lt.s32 	%p95, %r112, %r74;
+	setp.lt.s32 	%p96, %r113, %r74;
+	setp.lt.s32 	%p97, %r114, %r74;
+	setp.lt.s32 	%p98, %r115, %r74;
+	setp.lt.s32 	%p99, %r116, %r74;
+	setp.lt.s32 	%p100, %r117, %r74;
+	setp.lt.s32 	%p101, %r118, %r74;
+	setp.lt.s32 	%p102, %r119, %r74;
+	setp.lt.s32 	%p103, %r120, %r74;
+	setp.lt.s32 	%p104, %r121, %r74;
+	setp.lt.s32 	%p105, %r122, %r74;
+	setp.lt.s32 	%p106, %r123, %r74;
+	setp.lt.s32 	%p107, %r124, %r74;
+	setp.lt.s32 	%p108, %r125, %r74;
+	setp.lt.s32 	%p109, %r126, %r74;
+	setp.lt.s32 	%p110, %r127, %r74;
+	setp.lt.s32 	%p111, %r128, %r74;
+	setp.lt.s32 	%p112, %r129, %r74;
+	setp.lt.s32 	%p113, %r130, %r74;
+	setp.lt.s32 	%p114, %r131, %r74;
+	setp.lt.s32 	%p115, %r132, %r74;
+	setp.lt.s32 	%p116, %r133, %r74;
+	setp.lt.s32 	%p117, %r134, %r74;
+	setp.lt.s32 	%p118, %r135, %r74;
+	setp.lt.s32 	%p119, %r136, %r74;
+	setp.lt.s32 	%p120, %r137, %r74;
+	setp.lt.s32 	%p121, %r138, %r74;
+	setp.lt.s32 	%p122, %r139, %r74;
+	setp.lt.s32 	%p123, %r140, %r74;
+	setp.lt.s32 	%p124, %r141, %r74;
+	setp.lt.s32 	%p125, %r142, %r74;
+	setp.lt.s32 	%p126, %r143, %r74;
+	setp.lt.s32 	%p127, %r144, %r74;
+	setp.lt.s32 	%p128, %r145, %r74;
+	setp.lt.s32 	%p129, %r146, %r74;
+	setp.lt.s32 	%p130, %r147, %r74;
+	setp.lt.s32 	%p131, %r148, %r74;
+	setp.lt.s32 	%p132, %r149, %r74;
+	.loc	1 26 11                         // rowsum.ttir:26:11
+	and.pred 	%p1, %p68, %p69;
+	and.pred 	%p2, %p68, %p70;
+	and.pred 	%p3, %p68, %p71;
+	and.pred 	%p4, %p68, %p72;
+	and.pred 	%p5, %p68, %p73;
+	and.pred 	%p6, %p68, %p74;
+	and.pred 	%p7, %p68, %p75;
+	and.pred 	%p8, %p68, %p76;
+	and.pred 	%p9, %p68, %p77;
+	and.pred 	%p10, %p68, %p78;
+	and.pred 	%p11, %p68, %p79;
+	and.pred 	%p12, %p68, %p80;
+	and.pred 	%p13, %p68, %p81;
+	and.pred 	%p14, %p68, %p82;
+	and.pred 	%p15, %p68, %p83;
+	and.pred 	%p16, %p68, %p84;
+	and.pred 	%p17, %p68, %p85;
+	and.pred 	%p18, %p68, %p86;
+	and.pred 	%p19, %p68, %p87;
+	and.pred 	%p20, %p68, %p88;
+	and.pred 	%p21, %p68, %p89;
+	and.pred 	%p22, %p68, %p90;
+	and.pred 	%p23, %p68, %p91;
+	and.pred 	%p24, %p68, %p92;
+	and.pred 	%p25, %p68, %p93;
+	and.pred 	%p26, %p68, %p94;
+	and.pred 	%p27, %p68, %p95;
+	and.pred 	%p28, %p68, %p96;
+	and.pred 	%p29, %p68, %p97;
+	and.pred 	%p30, %p68, %p98;
+	and.pred 	%p31, %p68, %p99;
+	and.pred 	%p32, %p68, %p100;
+	and.pred 	%p33, %p68, %p101;
+	and.pred 	%p34, %p68, %p102;
+	and.pred 	%p35, %p68, %p103;
+	and.pred 	%p36, %p68, %p104;
+	and.pred 	%p37, %p68, %p105;
+	and.pred 	%p38, %p68, %p106;
+	and.pred 	%p39, %p68, %p107;
+	and.pred 	%p40, %p68, %p108;
+	and.pred 	%p41, %p68, %p109;
+	and.pred 	%p42, %p68, %p110;
+	and.pred 	%p43, %p68, %p111;
+	and.pred 	%p44, %p68, %p112;
+	and.pred 	%p45, %p68, %p113;
+	and.pred 	%p46, %p68, %p114;
+	and.pred 	%p47, %p68, %p115;
+	and.pred 	%p48, %p68, %p116;
+	and.pred 	%p49, %p68, %p117;
+	and.pred 	%p50, %p68, %p118;
+	and.pred 	%p51, %p68, %p119;
+	and.pred 	%p52, %p68, %p120;
+	and.pred 	%p53, %p68, %p121;
+	and.pred 	%p54, %p68, %p122;
+	and.pred 	%p55, %p68, %p123;
+	and.pred 	%p56, %p68, %p124;
+	and.pred 	%p57, %p68, %p125;
+	and.pred 	%p58, %p68, %p126;
+	and.pred 	%p59, %p68, %p127;
+	and.pred 	%p60, %p68, %p128;
+	and.pred 	%p61, %p68, %p129;
+	and.pred 	%p62, %p68, %p130;
+	and.pred 	%p63, %p68, %p131;
+	and.pred 	%p64, %p68, %p132;
+	.loc	1 28 11                         // rowsum.ttir:28:11
+	shl.b32 	%r150, %r78, 1;
+	shl.b32 	%r151, %r78, 2;
+	shl.b32 	%r152, %r78, 3;
+	shl.b32 	%r153, %r78, 4;
+	shl.b32 	%r154, %r78, 5;
+	shl.b32 	%r155, %r78, 6;
+	.loc	1 29 11                         // rowsum.ttir:29:11
+	mad.lo.s32 	%r156, %r78, %r86, %r83;
+	add.s32 	%r157, %r156, %r150;
+	add.s32 	%r158, %r156, %r151;
+	mad.lo.s32 	%r159, %r78, 6, %r156;
+	add.s32 	%r160, %r156, %r152;
+	mad.lo.s32 	%r161, %r78, 10, %r156;
+	mad.lo.s32 	%r162, %r78, 12, %r156;
+	mad.lo.s32 	%r163, %r78, %r93, %r83;
+	add.s32 	%r164, %r156, %r153;
+	mad.lo.s32 	%r165, %r78, 18, %r156;
+	mad.lo.s32 	%r166, %r78, 20, %r156;
+	mad.lo.s32 	%r167, %r78, 22, %r156;
+	mad.lo.s32 	%r168, %r78, 24, %r156;
+	mad.lo.s32 	%r169, %r78, 26, %r156;
+	mad.lo.s32 	%r170, %r78, 28, %r156;
+	mad.lo.s32 	%r171, %r78, %r101, %r83;
+	add.s32 	%r172, %r156, %r154;
+	mad.lo.s32 	%r173, %r78, 34, %r156;
+	mad.lo.s32 	%r174, %r78, 36, %r156;
+	mad.lo.s32 	%r175, %r78, 38, %r156;
+	mad.lo.s32 	%r176, %r78, 40, %r156;
+	mad.lo.s32 	%r177, %r78, 42, %r156;
+	mad.lo.s32 	%r178, %r78, 44, %r156;
+	mad.lo.s32 	%r179, %r78, %r109, %r83;
+	mad.lo.s32 	%r180, %r78, 48, %r156;
+	mad.lo.s32 	%r181, %r78, 50, %r156;
+	mad.lo.s32 	%r182, %r78, 52, %r156;
+	mad.lo.s32 	%r183, %r78, 54, %r156;
+	mad.lo.s32 	%r184, %r78, 56, %r156;
+	mad.lo.s32 	%r185, %r78, 58, %r156;
+	mad.lo.s32 	%r186, %r78, 60, %r156;
+	mad.lo.s32 	%r187, %r78, %r117, %r83;
+	add.s32 	%r188, %r156, %r155;
+	mad.lo.s32 	%r189, %r78, 66, %r156;
+	mad.lo.s32 	%r190, %r78, 68, %r156;
+	mad.lo.s32 	%r191, %r78, 70, %r156;
+	mad.lo.s32 	%r192, %r78, 72, %r156;
+	mad.lo.s32 	%r193, %r78, 74, %r156;
+	mad.lo.s32 	%r194, %r78, 76, %r156;
+	mad.lo.s32 	%r195, %r78, %r125, %r83;
+	mad.lo.s32 	%r196, %r78, 80, %r156;
+	mad.lo.s32 	%r197, %r78, 82, %r156;
+	mad.lo.s32 	%r198, %r78, 84, %r156;
+	mad.lo.s32 	%r199, %r78, 86, %r156;
+	mad.lo.s32 	%r200, %r78, 88, %r156;
+	mad.lo.s32 	%r201, %r78, 90, %r156;
+	mad.lo.s32 	%r202, %r78, 92, %r156;
+	mad.lo.s32 	%r203, %r78, %r133, %r83;
+	mad.lo.s32 	%r204, %r78, 96, %r156;
+	mad.lo.s32 	%r205, %r78, 98, %r156;
+	mad.lo.s32 	%r206, %r78, 100, %r156;
+	mad.lo.s32 	%r207, %r78, 102, %r156;
+	mad.lo.s32 	%r208, %r78, 104, %r156;
+	mad.lo.s32 	%r209, %r78, 106, %r156;
+	mad.lo.s32 	%r210, %r78, 108, %r156;
+	mad.lo.s32 	%r211, %r78, %r141, %r83;
+	mad.lo.s32 	%r212, %r78, 112, %r156;
+	mad.lo.s32 	%r213, %r78, 114, %r156;
+	mad.lo.s32 	%r214, %r78, 116, %r156;
+	mad.lo.s32 	%r215, %r78, 118, %r156;
+	mad.lo.s32 	%r216, %r78, 120, %r156;
+	mad.lo.s32 	%r217, %r78, 122, %r156;
+	mad.lo.s32 	%r218, %r78, 124, %r156;
+	mad.lo.s32 	%r219, %r78, %r149, %r83;
+	.loc	1 31 11                         // rowsum.ttir:31:11
+	mad.wide.s32 	%rd1, %r156, 4, %rd66;
+	mad.wide.s32 	%rd2, %r157, 4, %rd66;
+	mad.wide.s32 	%rd3, %r158, 4, %rd66;
+	mad.wide.s32 	%rd4, %r159, 4, %rd66;
+	mad.wide.s32 	%rd5, %r160, 4, %rd66;
+	mad.wide.s32 	%rd6, %r161, 4, %rd66;
+	mad.wide.s32 	%rd7, %r162, 4, %rd66;
+	mad.wide.s32 	%rd8, %r163, 4, %rd66;
+	mad.wide.s32 	%rd9, %r164, 4, %rd66;
+	mad.wide.s32 	%rd10, %r165, 4, %rd66;
+	mad.wide.s32 	%rd11, %r166, 4, %rd66;
+	mad.wide.s32 	%rd12, %r167, 4, %rd66;
+	mad.wide.s32 	%rd13, %r168, 4, %rd66;
+	mad.wide.s32 	%rd14, %r169, 4, %rd66;
+	mad.wide.s32 	%rd15, %r170, 4, %rd66;
+	mad.wide.s32 	%rd16, %r171, 4, %rd66;
+	mad.wide.s32 	%rd17, %r172, 4, %rd66;
+	mad.wide.s32 	%rd18, %r173, 4, %rd66;
+	mad.wide.s32 	%rd19, %r174, 4, %rd66;
+	mad.wide.s32 	%rd20, %r175, 4, %rd66;
+	mad.wide.s32 	%rd21, %r176, 4, %rd66;
+	mad.wide.s32 	%rd22, %r177, 4, %rd66;
+	mad.wide.s32 	%rd23, %r178, 4, %rd66;
+	mad.wide.s32 	%rd24, %r179, 4, %rd66;
+	mad.wide.s32 	%rd25, %r180, 4, %rd66;
+	mad.wide.s32 	%rd26, %r181, 4, %rd66;
+	mad.wide.s32 	%rd27, %r182, 4, %rd66;
+	mad.wide.s32 	%rd28, %r183, 4, %rd66;
+	mad.wide.s32 	%rd29, %r184, 4, %rd66;
+	mad.wide.s32 	%rd30, %r185, 4, %rd66;
+	mad.wide.s32 	%rd31, %r186, 4, %rd66;
+	mad.wide.s32 	%rd32, %r187, 4, %rd66;
+	mad.wide.s32 	%rd33, %r188, 4, %rd66;
+	mad.wide.s32 	%rd34, %r189, 4, %rd66;
+	mad.wide.s32 	%rd35, %r190, 4, %rd66;
+	mad.wide.s32 	%rd36, %r191, 4, %rd66;
+	mad.wide.s32 	%rd37, %r192, 4, %rd66;
+	mad.wide.s32 	%rd38, %r193, 4, %rd66;
+	mad.wide.s32 	%rd39, %r194, 4, %rd66;
+	mad.wide.s32 	%rd40, %r195, 4, %rd66;
+	mad.wide.s32 	%rd41, %r196, 4, %rd66;
+	mad.wide.s32 	%rd42, %r197, 4, %rd66;
+	mad.wide.s32 	%rd43, %r198, 4, %rd66;
+	mad.wide.s32 	%rd44, %r199, 4, %rd66;
+	mad.wide.s32 	%rd45, %r200, 4, %rd66;
+	mad.wide.s32 	%rd46, %r201, 4, %rd66;
+	mad.wide.s32 	%rd47, %r202, 4, %rd66;
+	mad.wide.s32 	%rd48, %r203, 4, %rd66;
+	mad.wide.s32 	%rd49, %r204, 4, %rd66;
+	mad.wide.s32 	%rd50, %r205, 4, %rd66;
+	mad.wide.s32 	%rd51, %r206, 4, %rd66;
+	mad.wide.s32 	%rd52, %r207, 4, %rd66;
+	mad.wide.s32 	%rd53, %r208, 4, %rd66;
+	mad.wide.s32 	%rd54, %r209, 4, %rd66;
+	mad.wide.s32 	%rd55, %r210, 4, %rd66;
+	mad.wide.s32 	%rd56, %r211, 4, %rd66;
+	mad.wide.s32 	%rd57, %r212, 4, %rd66;
+	mad.wide.s32 	%rd58, %r213, 4, %rd66;
+	mad.wide.s32 	%rd59, %r214, 4, %rd66;
+	mad.wide.s32 	%rd60, %r215, 4, %rd66;
+	mad.wide.s32 	%rd61, %r216, 4, %rd66;
+	mad.wide.s32 	%rd62, %r217, 4, %rd66;
+	mad.wide.s32 	%rd63, %r218, 4, %rd66;
+	mad.wide.s32 	%rd64, %r219, 4, %rd66;
+	.loc	1 32 11                         // rowsum.ttir:32:11
+	// begin inline asm
+	mov.u32 %r1, 0x0;
+	@%p1 ld.global.b32 { %r1 }, [ %rd1 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r2, 0x0;
+	@%p2 ld.global.b32 { %r2 }, [ %rd2 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r3, 0x0;
+	@%p3 ld.global.b32 { %r3 }, [ %rd3 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r4, 0x0;
+	@%p4 ld.global.b32 { %r4 }, [ %rd4 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r5, 0x0;
+	@%p5 ld.global.b32 { %r5 }, [ %rd5 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r6, 0x0;
+	@%p6 ld.global.b32 { %r6 }, [ %rd6 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r7, 0x0;
+	@%p7 ld.global.b32 { %r7 }, [ %rd7 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r8, 0x0;
+	@%p8 ld.global.b32 { %r8 }, [ %rd8 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r9, 0x0;
+	@%p9 ld.global.b32 { %r9 }, [ %rd9 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r10, 0x0;
+	@%p10 ld.global.b32 { %r10 }, [ %rd10 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r11, 0x0;
+	@%p11 ld.global.b32 { %r11 }, [ %rd11 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r12, 0x0;
+	@%p12 ld.global.b32 { %r12 }, [ %rd12 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r13, 0x0;
+	@%p13 ld.global.b32 { %r13 }, [ %rd13 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r14, 0x0;
+	@%p14 ld.global.b32 { %r14 }, [ %rd14 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r15, 0x0;
+	@%p15 ld.global.b32 { %r15 }, [ %rd15 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r16, 0x0;
+	@%p16 ld.global.b32 { %r16 }, [ %rd16 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r17, 0x0;
+	@%p17 ld.global.b32 { %r17 }, [ %rd17 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r18, 0x0;
+	@%p18 ld.global.b32 { %r18 }, [ %rd18 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r19, 0x0;
+	@%p19 ld.global.b32 { %r19 }, [ %rd19 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r20, 0x0;
+	@%p20 ld.global.b32 { %r20 }, [ %rd20 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r21, 0x0;
+	@%p21 ld.global.b32 { %r21 }, [ %rd21 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r22, 0x0;
+	@%p22 ld.global.b32 { %r22 }, [ %rd22 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r23, 0x0;
+	@%p23 ld.global.b32 { %r23 }, [ %rd23 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r24, 0x0;
+	@%p24 ld.global.b32 { %r24 }, [ %rd24 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r25, 0x0;
+	@%p25 ld.global.b32 { %r25 }, [ %rd25 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r26, 0x0;
+	@%p26 ld.global.b32 { %r26 }, [ %rd26 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r27, 0x0;
+	@%p27 ld.global.b32 { %r27 }, [ %rd27 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r28, 0x0;
+	@%p28 ld.global.b32 { %r28 }, [ %rd28 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r29, 0x0;
+	@%p29 ld.global.b32 { %r29 }, [ %rd29 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r30, 0x0;
+	@%p30 ld.global.b32 { %r30 }, [ %rd30 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r31, 0x0;
+	@%p31 ld.global.b32 { %r31 }, [ %rd31 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r32, 0x0;
+	@%p32 ld.global.b32 { %r32 }, [ %rd32 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r33, 0x0;
+	@%p33 ld.global.b32 { %r33 }, [ %rd33 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r34, 0x0;
+	@%p34 ld.global.b32 { %r34 }, [ %rd34 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r35, 0x0;
+	@%p35 ld.global.b32 { %r35 }, [ %rd35 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r36, 0x0;
+	@%p36 ld.global.b32 { %r36 }, [ %rd36 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r37, 0x0;
+	@%p37 ld.global.b32 { %r37 }, [ %rd37 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r38, 0x0;
+	@%p38 ld.global.b32 { %r38 }, [ %rd38 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r39, 0x0;
+	@%p39 ld.global.b32 { %r39 }, [ %rd39 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r40, 0x0;
+	@%p40 ld.global.b32 { %r40 }, [ %rd40 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r41, 0x0;
+	@%p41 ld.global.b32 { %r41 }, [ %rd41 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r42, 0x0;
+	@%p42 ld.global.b32 { %r42 }, [ %rd42 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r43, 0x0;
+	@%p43 ld.global.b32 { %r43 }, [ %rd43 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r44, 0x0;
+	@%p44 ld.global.b32 { %r44 }, [ %rd44 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r45, 0x0;
+	@%p45 ld.global.b32 { %r45 }, [ %rd45 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r46, 0x0;
+	@%p46 ld.global.b32 { %r46 }, [ %rd46 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r47, 0x0;
+	@%p47 ld.global.b32 { %r47 }, [ %rd47 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r48, 0x0;
+	@%p48 ld.global.b32 { %r48 }, [ %rd48 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r49, 0x0;
+	@%p49 ld.global.b32 { %r49 }, [ %rd49 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r50, 0x0;
+	@%p50 ld.global.b32 { %r50 }, [ %rd50 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r51, 0x0;
+	@%p51 ld.global.b32 { %r51 }, [ %rd51 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r52, 0x0;
+	@%p52 ld.global.b32 { %r52 }, [ %rd52 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r53, 0x0;
+	@%p53 ld.global.b32 { %r53 }, [ %rd53 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r54, 0x0;
+	@%p54 ld.global.b32 { %r54 }, [ %rd54 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r55, 0x0;
+	@%p55 ld.global.b32 { %r55 }, [ %rd55 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r56, 0x0;
+	@%p56 ld.global.b32 { %r56 }, [ %rd56 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r57, 0x0;
+	@%p57 ld.global.b32 { %r57 }, [ %rd57 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r58, 0x0;
+	@%p58 ld.global.b32 { %r58 }, [ %rd58 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r59, 0x0;
+	@%p59 ld.global.b32 { %r59 }, [ %rd59 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r60, 0x0;
+	@%p60 ld.global.b32 { %r60 }, [ %rd60 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r61, 0x0;
+	@%p61 ld.global.b32 { %r61 }, [ %rd61 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r62, 0x0;
+	@%p62 ld.global.b32 { %r62 }, [ %rd62 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r63, 0x0;
+	@%p63 ld.global.b32 { %r63 }, [ %rd63 + 0 ];
+	// end inline asm
+	// begin inline asm
+	mov.u32 %r64, 0x0;
+	@%p64 ld.global.b32 { %r64 }, [ %rd64 + 0 ];
+	// end inline asm
+	.loc	1 35 13                         // rowsum.ttir:35:13
+	add.f32 	%r220, %r1, %r2;
+	add.f32 	%r221, %r220, %r3;
+	add.f32 	%r222, %r221, %r4;
+	add.f32 	%r223, %r222, %r5;
+	add.f32 	%r224, %r223, %r6;
+	add.f32 	%r225, %r224, %r7;
+	add.f32 	%r226, %r225, %r8;
+	add.f32 	%r227, %r226, %r9;
+	add.f32 	%r228, %r227, %r10;
+	add.f32 	%r229, %r228, %r11;
+	add.f32 	%r230, %r229, %r12;
+	add.f32 	%r231, %r230, %r13;
+	add.f32 	%r232, %r231, %r14;
+	add.f32 	%r233, %r232, %r15;
+	add.f32 	%r234, %r233, %r16;
+	add.f32 	%r235, %r234, %r17;
+	add.f32 	%r236, %r235, %r18;
+	add.f32 	%r237, %r236, %r19;
+	add.f32 	%r238, %r237, %r20;
+	add.f32 	%r239, %r238, %r21;
+	add.f32 	%r240, %r239, %r22;
+	add.f32 	%r241, %r240, %r23;
+	add.f32 	%r242, %r241, %r24;
+	add.f32 	%r243, %r242, %r25;
+	add.f32 	%r244, %r243, %r26;
+	add.f32 	%r245, %r244, %r27;
+	add.f32 	%r246, %r245, %r28;
+	add.f32 	%r247, %r246, %r29;
+	add.f32 	%r248, %r247, %r30;
+	add.f32 	%r249, %r248, %r31;
+	add.f32 	%r250, %r249, %r32;
+	add.f32 	%r251, %r250, %r33;
+	add.f32 	%r252, %r251, %r34;
+	add.f32 	%r253, %r252, %r35;
+	add.f32 	%r254, %r253, %r36;
+	add.f32 	%r255, %r254, %r37;
+	add.f32 	%r256, %r255, %r38;
+	add.f32 	%r257, %r256, %r39;
+	add.f32 	%r258, %r257, %r40;
+	add.f32 	%r259, %r258, %r41;
+	add.f32 	%r260, %r259, %r42;
+	add.f32 	%r261, %r260, %r43;
+	add.f32 	%r262, %r261, %r44;
+	add.f32 	%r263, %r262, %r45;
+	add.f32 	%r264, %r263, %r46;
+	add.f32 	%r265, %r264, %r47;
+	add.f32 	%r266, %r265, %r48;
+	add.f32 	%r267, %r266, %r49;
+	add.f32 	%r268, %r267, %r50;
+	add.f32 	%r269, %r268, %r51;
+	add.f32 	%r270, %r269, %r52;
+	add.f32 	%r271, %r270, %r53;
+	add.f32 	%r272, %r271, %r54;
+	add.f32 	%r273, %r272, %r55;
+	add.f32 	%r274, %r273, %r56;
+	add.f32 	%r275, %r274, %r57;
+	add.f32 	%r276, %r275, %r58;
+	add.f32 	%r277, %r276, %r59;
+	add.f32 	%r278, %r277, %r60;
+	add.f32 	%r279, %r278, %r61;
+	add.f32 	%r280, %r279, %r62;
+	add.f32 	%r281, %r280, %r63;
+	add.f32 	%r66, %r281, %r64;
+	.loc	1 33 11                         // rowsum.ttir:33:11
+	shl.b32 	%r282, %r79, 3;
+	mov.b32 	%r283, global_smem;
+	add.s32 	%r284, %r283, %r282;
+	shl.b32 	%r285, %r86, 2;
+	add.s32 	%r65, %r284, %r285;
+	mov.pred 	%p65, -1;
+	// begin inline asm
+	@%p65 st.shared.b32 [ %r65 + 0 ], %r66;
+	// end inline asm
+	bar.sync 	0;
+	shl.b32 	%r286, %r77, 2;
+	add.s32 	%r68, %r283, %r286;
+	// begin inline asm
+	@%p65 ld.shared.b32 %r67, [ %r68 + 0 ];
+	// end inline asm
+	shfl.sync.bfly.b32 	%r287, %r67, 1, 31, -1;
+	.loc	1 35 13                         // rowsum.ttir:35:13
+	add.f32 	%r69, %r67, %r287;
+	.loc	1 33 11                         // rowsum.ttir:33:11
+	and.b32 	%r288, %r76, 1;
+	setp.ne.b32 	%p133, %r288, 0;
+	not.pred 	%p66, %p133;
+	// begin inline asm
+	@%p66 st.shared.b32 [ %r68 + 0 ], %r69;
+	// end inline asm
+	bar.sync 	0;
+	ld.shared.b32 	%r70, [%r284];
+	.loc	1 47 11                         // rowsum.ttir:47:11
+	setp.lt.s32 	%p134, %r80, %r81;
+	.loc	1 49 11                         // rowsum.ttir:49:11
+	mul.lo.s32 	%r289, %r84, %r80;
+	.loc	1 59 11                         // rowsum.ttir:59:11
+	setp.gt.s32 	%p135, %r82, 0;
+	.loc	1 60 11                         // rowsum.ttir:60:11
+	and.pred 	%p136, %p134, %p135;
+	.loc	1 65 11                         // rowsum.ttir:65:11
+	mad.wide.s32 	%rd65, %r289, 4, %rd67;
+	.loc	1 66 5                          // rowsum.ttir:66:5
+	and.b32 	%r290, %r76, 64;
+	setp.eq.b32 	%p137, %r290, 0;
+	and.pred 	%p67, %p137, %p136;
+	// begin inline asm
+	@%p67 st.global.b32 [ %rd65 + 0 ], { %r70 };
+	// end inline asm
+	.loc	1 67 5                          // rowsum.ttir:67:5
+	ret;
+$L__tmp1:
+$L__func_end0:
+                                        // -- End function
+}
+	.file	1 &quot;/tmp/jl_eFtPRT/rowsum.ttir&quot;
+	.section	.debug_abbrev
+	{
+.b8 1                                   // Abbreviation Code
+.b8 17                                  // DW_TAG_compile_unit
+.b8 0                                   // DW_CHILDREN_no
+.b8 37                                  // DW_AT_producer
+.b8 8                                   // DW_FORM_string
+.b8 19                                  // DW_AT_language
+.b8 5                                   // DW_FORM_data2
+.b8 3                                   // DW_AT_name
+.b8 8                                   // DW_FORM_string
+.b8 16                                  // DW_AT_stmt_list
+.b8 6                                   // DW_FORM_data4
+.b8 27                                  // DW_AT_comp_dir
+.b8 8                                   // DW_FORM_string
+.b8 0                                   // EOM(1)
+.b8 0                                   // EOM(2)
+.b8 0                                   // EOM(3)
+	}
+	.section	.debug_info
+	{
+.b32 48                                 // Length of Unit
+.b8 2                                   // DWARF version number
+.b8 0
+.b32 .debug_abbrev                      // Offset Into Abbrev. Section
+.b8 8                                   // Address Size (in bytes)
+.b8 1                                   // Abbrev [1] 0xb:0x29 DW_TAG_compile_unit
+.b8 116                                 // DW_AT_producer
+.b8 114
+.b8 105
+.b8 116
+.b8 111
+.b8 110
+.b8 0
+.b8 2                                   // DW_AT_language
+.b8 0
+.b8 114                                 // DW_AT_name
+.b8 111
+.b8 119
+.b8 115
+.b8 117
+.b8 109
+.b8 46
+.b8 116
+.b8 116
+.b8 105
+.b8 114
+.b8 0
+.b32 .debug_line                        // DW_AT_stmt_list
+.b8 47                                  // DW_AT_comp_dir
+.b8 116
+.b8 109
+.b8 112
+.b8 47
+.b8 106
+.b8 108
+.b8 95
+.b8 101
+.b8 70
+.b8 116
+.b8 80
+.b8 82
+.b8 84
+.b8 0
+	}
+	.section	.debug_macinfo	{	}
+</code></pre>
+  </details>
+  <details>
+    <summary><b>SASS — final sm_90 machine code (nvdisasm)</b> <span class="mono">(679 lines)</span> — What actually executes</summary>
+    <pre><code>	.headerflags	@&quot;EF_CUDA_TEXMODE_UNIFIED EF_CUDA_64BIT_ADDRESS EF_CUDA_ACCELERATORS EF_CUDA_SM90 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM90)&quot;
+	.elftype	@&quot;ET_EXEC&quot;
+
+
+//--------------------- .text.rowsum              --------------------------
+	.section	.text.rowsum,&quot;ax&quot;,@progbits
+	.sectionflags	@&quot;SHF_BARRIERS=1&quot;
+	.align	128
+        .global         rowsum
+        .type           rowsum,@function
+        .size           rowsum,(.L_x_1 - rowsum)
+        .other          rowsum,@&quot;STO_CUDA_ENTRY STV_DEFAULT&quot;
+rowsum:
+.text.rowsum:
+        /*0000*/                   LDC R1, c[0x0][0x28] ;
+        /*0010*/                   S2R R16, SR_TID.X ;
+        /*0020*/                   LDC.64 R4, c[0x0][0x220] ;
+        /*0030*/                   ULDC.64 UR4, c[0x0][0x218] ;
+        /*0040*/                   ULDC.64 UR8, c[0x0][0x210] ;
+        /*0050*/                   S2R R0, SR_CTAID.X ;
+        /*0060*/                   IMAD.MOV.U32 R52, RZ, RZ, RZ ;
+        /*0070*/                   ULDC.64 UR6, c[0x0][0x208] ;
+        /*0080*/                   LOP3.LUT R3, R16, 0x3f, RZ, 0xc0, !PT ;
+        /*0090*/                   SHF.R.U32.HI R2, RZ, 0x6, R16 ;
+        /*00a0*/                   IMAD R3, R0, 0x40, R3 ;
+        /*00b0*/                   SGXT.U32 R0, R2, 0x1 ;
+        /*00c0*/                   LEA.HI R2, R16, 0xe, RZ, 0x1a ;
+        /*00d0*/                   IMAD R4, R3.reuse, R4, RZ ;
+        /*00e0*/                   ISETP.GE.AND P5, PT, R3, UR4, PT ;
+        /*00f0*/                   LOP3.LUT R8, R0, 0x4, RZ, 0xfc, !PT ;
+        /*0100*/                   IMAD R7, R2, R5, R4 ;
+        /*0110*/                   LOP3.LUT R6, R0, 0x2, RZ, 0xfc, !PT ;
+        /*0120*/                   ISETP.LT.AND P1, PT, R8, UR5, !P5 ;
+        /*0130*/                   ISETP.LT.AND P0, PT, R2, UR5, !P5 ;
+        /*0140*/                   ISETP.LT.AND P2, PT, R6, UR5, !P5 ;
+        /*0150*/                   P2R R70, PR, RZ, 0x2 ;
+        /*0160*/                   LEA R6, P1, R7, UR8, 0x2 ;
+        /*0170*/                   LEA.HI R2, R16.reuse, 0x1e, RZ, 0x1a ;
+        /*0180*/                   LEA.HI R8, R16, 0x2e, RZ, 0x1a ;
+        /*0190*/                   LEA.HI.X.SX32 R7, R7, UR9, 0x2, P1 ;
+        /*01a0*/                   IMAD R9, R2.reuse, R5.reuse, R4.reuse ;
+        /*01b0*/                   ISETP.LT.AND P1, PT, R2, UR5, !P5 ;
+        /*01c0*/                   IMAD R11, R8.reuse, R5, R4 ;
+        /*01d0*/                   P2R R68, PR, RZ, 0x4 ;
+        /*01e0*/               @P0 LDG.E R52, desc[UR6][R6.64] ;
+        /*01f0*/                   ISETP.LT.AND P2, PT, R8, UR5, !P5 ;
+        /*0200*/                   LEA R8, P0, R9, UR8, 0x2 ;
+        /*0210*/                   LEA.HI R2, R16, 0x3e, RZ, 0x1a ;
+        /*0220*/                   IMAD.MOV.U32 R50, RZ, RZ, RZ ;
+        /*0230*/                   LEA R10, P3, R11, UR8, 0x2 ;
+        /*0240*/                   LEA.HI.X.SX32 R9, R9, UR9, 0x2, P0 ;
+        /*0250*/                   IMAD R12, R2.reuse, R5, R4 ;
+        /*0260*/                   ISETP.LT.AND P0, PT, R2, UR5, !P5 ;
+        /*0270*/                   IMAD.MOV.U32 R42, RZ, RZ, RZ ;
+        /*0280*/                   LEA.HI.X.SX32 R11, R11, UR9, 0x2, P3 ;
+        /*0290*/               @P1 LDG.E R50, desc[UR6][R8.64] ;
+        /*02a0*/                   LEA R6, P1, R12, UR8, 0x2 ;
+        /*02b0*/                   LEA.HI R2, R16, 0x4e, RZ, 0x1a ;
+        /*02c0*/               @P2 LDG.E R42, desc[UR6][R10.64] ;
+        /*02d0*/                   IMAD.MOV.U32 R34, RZ, RZ, RZ ;
+        /*02e0*/                   LEA.HI.X.SX32 R7, R12, UR9, 0x2, P1 ;
+        /*02f0*/                   ISETP.LT.AND P2, PT, R2.reuse, UR5, !P5 ;
+        /*0300*/                   IMAD R2, R2, R5.reuse, R4.reuse ;
+        /*0310*/                   LEA.HI R12, R16, 0x5e, RZ, 0x1a ;
+        /*0320*/               @P0 LDG.E R34, desc[UR6][R6.64] ;
+        /*0330*/                   LEA R8, P0, R2, UR8, 0x2 ;
+        /*0340*/                   IMAD R13, R12, R5, R4 ;
+        /*0350*/                   LEA.HI R10, R16, 0x6e, RZ, 0x1a ;
+        /*0360*/                   IMAD.MOV.U32 R26, RZ, RZ, RZ ;
+        /*0370*/                   ISETP.LT.AND P1, PT, R12, UR5, !P5 ;
+        /*0380*/                   LEA.HI.X.SX32 R9, R2, UR9, 0x2, P0 ;
+        /*0390*/                   IMAD R7, R10, R5, R4 ;
+        /*03a0*/                   LEA R12, P3, R13.reuse, UR8, 0x2 ;
+        /*03b0*/                   LOP3.LUT R2, R0, 0x6, RZ, 0xfc, !PT ;
+        /*03c0*/               @P2 LDG.E R26, desc[UR6][R8.64] ;
+        /*03d0*/                   ISETP.LT.AND P0, PT, R10, UR5, !P5 ;
+        /*03e0*/                   LEA.HI.X.SX32 R13, R13, UR9, 0x2, P3 ;
+        /*03f0*/                   ISETP.LT.AND P3, PT, R2, UR5, !P5 ;
+        /*0400*/                   LEA R6, P2, R7.reuse, UR8, 0x2 ;
+        /*0410*/                   LOP3.LUT R2, R0, 0x8, RZ, 0xfc, !PT ;
+        /*0420*/                   IMAD.MOV.U32 R11, RZ, RZ, RZ ;
+        /*0430*/                   LEA.HI.X.SX32 R7, R7, UR9, 0x2, P2 ;
+        /*0440*/                   ISETP.LT.AND P2, PT, R2, UR5, !P5 ;
+        /*0450*/                   LOP3.LUT R2, R0.reuse, 0xc, RZ, 0xfc, !PT ;
+        /*0460*/                   IMAD.MOV.U32 R18, RZ, RZ, RZ ;
+        /*0470*/               @P0 LDG.E R11, desc[UR6][R6.64] ;
+        /*0480*/                   LOP3.LUT R8, R0, 0x12, RZ, 0xfc, !PT ;
+        /*0490*/                   ISETP.LT.AND P0, PT, R2, UR5, !P5 ;
+        /*04a0*/               @P1 LDG.E R18, desc[UR6][R12.64] ;
+        /*04b0*/                   P2R R117, PR, RZ, 0x1 ;
+        /*04c0*/                   ISETP.LT.AND P0, PT, R8, UR5, !P5 ;
+        /*04d0*/                   LOP3.LUT R10, R0.reuse, 0xa, RZ, 0xfc, !PT ;
+        /*04e0*/                   LOP3.LUT R12, R0, 0x18, RZ, 0xfc, !PT ;
+        /*04f0*/                   P2R R112, PR, RZ, 0x1 ;
+        /*0500*/                   ISETP.LT.AND P0, PT, R12, UR5, !P5 ;
+        /*0510*/                   ISETP.LT.AND P1, PT, R10, UR5, !P5 ;
+        /*0520*/                   LOP3.LUT R15, R0.reuse, 0x20, RZ, 0xfc, !PT ;
+        /*0530*/                   LOP3.LUT R2, R0, 0x10, RZ, 0xfc, !PT ;
+        /*0540*/                   P2R R103, PR, RZ, 0x1 ;
+        /*0550*/                   P2R R114, PR, RZ, 0x2 ;
+        /*0560*/                   LOP3.LUT R9, R0.reuse, 0x14, RZ, 0xfc, !PT ;
+        /*0570*/                   ISETP.LT.AND P0, PT, R15, UR5, !P5 ;
+        /*0580*/                   LOP3.LUT R17, R0, 0x26, RZ, 0xfc, !PT ;
+        /*0590*/                   ISETP.LT.AND P1, PT, R2, UR5, !P5 ;
+        /*05a0*/                   LOP3.LUT R10, R0, 0x16, RZ, 0xfc, !PT ;
+        /*05b0*/                   P2R R111, PR, RZ, 0x4 ;
+        /*05c0*/                   ISETP.LT.AND P2, PT, R9, UR5, !P5 ;
+        /*05d0*/                   P2R R97, PR, RZ, 0x1 ;
+        /*05e0*/                   LOP3.LUT R13, R0, 0x1a, RZ, 0xfc, !PT ;
+        /*05f0*/                   P2R R116, PR, RZ, 0x2 ;
+        /*0600*/                   ISETP.LT.AND P0, PT, R17, UR5, !P5 ;
+        /*0610*/                   LOP3.LUT R21, R0, 0x2c, RZ, 0xfc, !PT ;
+        /*0620*/                   ISETP.LT.AND P1, PT, R10, UR5, !P5 ;
+        /*0630*/                   LOP3.LUT R14, R0, 0x1c, RZ, 0xfc, !PT ;
+        /*0640*/                   P2R R109, PR, RZ, 0x4 ;
+        /*0650*/                   ISETP.LT.AND P2, PT, R13, UR5, !P5 ;
+        /*0660*/                   P2R R94, PR, RZ, 0x1 ;
+        /*0670*/                   LOP3.LUT R6, R0.reuse, 0x22, RZ, 0xfc, !PT ;
+        /*0680*/                   P2R R107, PR, RZ, 0x2 ;
+        /*0690*/                   ISETP.LT.AND P0, PT, R21, UR5, !P5 ;
+        /*06a0*/                   LOP3.LUT R24, R0, 0x34, RZ, 0xfc, !PT ;
+        /*06b0*/                   ISETP.LT.AND P1, PT, R14, UR5, !P5 ;
+        /*06c0*/                   LOP3.LUT R7, R0, 0x24, RZ, 0xfc, !PT ;
+        /*06d0*/                   P2R R100, PR, RZ, 0x4 ;
+        /*06e0*/                   ISETP.LT.AND P2, PT, R6, UR5, !P5 ;
+        /*06f0*/                   P2R R91, PR, RZ, 0x1 ;
+        /*0700*/                   LOP3.LUT R19, R0, 0x28, RZ, 0xfc, !PT ;
+        /*0710*/                   P2R R98, PR, RZ, 0x2 ;
+        /*0720*/                   ISETP.LT.AND P0, PT, R24, UR5, !P5 ;
+        /*0730*/                   LOP3.LUT R28, R0.reuse, 0x3a, RZ, 0xfc, !PT ;
+        /*0740*/                   ISETP.LT.AND P1, PT, R7, UR5, !P5 ;
+        /*0750*/                   LOP3.LUT R20, R0, 0x2a, RZ, 0xfc, !PT ;
+        /*0760*/                   P2R R96, PR, RZ, 0x4 ;
+        /*0770*/                   ISETP.LT.AND P2, PT, R19, UR5, !P5 ;
+        /*0780*/                   P2R R88, PR, RZ, 0x1 ;
+        /*0790*/                   LOP3.LUT R22, R0, 0x30, RZ, 0xfc, !PT ;
+        /*07a0*/                   P2R R95, PR, RZ, 0x2 ;
+        /*07b0*/                   ISETP.LT.AND P0, PT, R28, UR5, !P5 ;
+        /*07c0*/                   LOP3.LUT R31, R0, 0x42, RZ, 0xfc, !PT ;
+        /*07d0*/                   ISETP.LT.AND P1, PT, R20, UR5, !P5 ;
+        /*07e0*/                   LOP3.LUT R23, R0, 0x32, RZ, 0xfc, !PT ;
+        /*07f0*/                   P2R R93, PR, RZ, 0x4 ;
+        /*0800*/                   ISETP.LT.AND P2, PT, R22, UR5, !P5 ;
+        /*0810*/                   P2R R85, PR, RZ, 0x1 ;
+        /*0820*/                   LOP3.LUT R25, R0, 0x36, RZ, 0xfc, !PT ;
+        /*0830*/                   P2R R92, PR, RZ, 0x2 ;
+        /*0840*/                   ISETP.LT.AND P0, PT, R31, UR5, !P5 ;
+        /*0850*/                   LOP3.LUT R35, R0.reuse, 0x48, RZ, 0xfc, !PT ;
+        /*0860*/                   ISETP.LT.AND P1, PT, R23, UR5, !P5 ;
+        /*0870*/                   LOP3.LUT R27, R0, 0x38, RZ, 0xfc, !PT ;
+        /*0880*/                   P2R R90, PR, RZ, 0x4 ;
+        /*0890*/                   ISETP.LT.AND P2, PT, R25, UR5, !P5 ;
+        /*08a0*/                   P2R R82, PR, RZ, 0x1 ;
+        /*08b0*/                   LOP3.LUT R29, R0.reuse, 0x3c, RZ, 0xfc, !PT ;
+        /*08c0*/                   P2R R89, PR, RZ, 0x2 ;
+        /*08d0*/                   ISETP.LT.AND P0, PT, R35, UR5, !P5 ;
+        /*08e0*/                   LOP3.LUT R38, R0.reuse, 0x50, RZ, 0xfc, !PT ;
+        /*08f0*/                   ISETP.LT.AND P1, PT, R27, UR5, !P5 ;
+        /*0900*/                   LOP3.LUT R30, R0, 0x40, RZ, 0xfc, !PT ;
+        /*0910*/                   P2R R87, PR, RZ, 0x4 ;
+        /*0920*/                   ISETP.LT.AND P2, PT, R29, UR5, !P5 ;
+        /*0930*/                   P2R R79, PR, RZ, 0x1 ;
+        /*0940*/                   LOP3.LUT R32, R0, 0x44, RZ, 0xfc, !PT ;
+        /*0950*/                   P2R R86, PR, RZ, 0x2 ;
+        /*0960*/                   ISETP.LT.AND P0, PT, R38, UR5, !P5 ;
+        /*0970*/                   LOP3.LUT R41, R0, 0x56, RZ, 0xfc, !PT ;
+        /*0980*/                   ISETP.LT.AND P1, PT, R30, UR5, !P5 ;
+        /*0990*/                   LOP3.LUT R33, R0, 0x46, RZ, 0xfc, !PT ;
+        /*09a0*/                   P2R R84, PR, RZ, 0x4 ;
+        /*09b0*/                   ISETP.LT.AND P2, PT, R32, UR5, !P5 ;
+        /*09c0*/                   P2R R76, PR, RZ, 0x1 ;
+        /*09d0*/                   LOP3.LUT R36, R0.reuse, 0x4a, RZ, 0xfc, !PT ;
+        /*09e0*/                   P2R R83, PR, RZ, 0x2 ;
+        /*09f0*/                   ISETP.LT.AND P0, PT, R41, UR5, !P5 ;
+        /*0a00*/                   LOP3.LUT R45, R0.reuse, 0x5c, RZ, 0xfc, !PT ;
+        /*0a10*/                   ISETP.LT.AND P1, PT, R33, UR5, !P5 ;
+        /*0a20*/                   LOP3.LUT R37, R0, 0x4c, RZ, 0xfc, !PT ;
+        /*0a30*/                   P2R R81, PR, RZ, 0x4 ;
+        /*0a40*/                   ISETP.LT.AND P2, PT, R36, UR5, !P5 ;
+        /*0a50*/                   P2R R73, PR, RZ, 0x1 ;
+        /*0a60*/                   LOP3.LUT R39, R0, 0x52, RZ, 0xfc, !PT ;
+        /*0a70*/                   P2R R80, PR, RZ, 0x2 ;
+        /*0a80*/                   ISETP.LT.AND P0, PT, R45, UR5, !P5 ;
+        /*0a90*/                   LOP3.LUT R48, R0.reuse, 0x64, RZ, 0xfc, !PT ;
+        /*0aa0*/                   ISETP.LT.AND P1, PT, R37, UR5, !P5 ;
+        /*0ab0*/                   LOP3.LUT R40, R0, 0x54, RZ, 0xfc, !PT ;
+        /*0ac0*/                   P2R R78, PR, RZ, 0x4 ;
+        /*0ad0*/                   ISETP.LT.AND P2, PT, R39, UR5, !P5 ;
+        /*0ae0*/                   P2R R62, PR, RZ, 0x1 ;
+        /*0af0*/                   LOP3.LUT R43, R0, 0x58, RZ, 0xfc, !PT ;
+        /*0b00*/                   P2R R77, PR, RZ, 0x2 ;
+        /*0b10*/                   ISETP.LT.AND P0, PT, R48, UR5, !P5 ;
+        /*0b20*/                   LOP3.LUT R53, R0, 0x6a, RZ, 0xfc, !PT ;
+        /*0b30*/                   ISETP.LT.AND P1, PT, R40, UR5, !P5 ;
+        /*0b40*/                   LOP3.LUT R44, R0, 0x5a, RZ, 0xfc, !PT ;
+        /*0b50*/                   P2R R75, PR, RZ, 0x4 ;
+        /*0b60*/                   ISETP.LT.AND P2, PT, R43, UR5, !P5 ;
+        /*0b70*/                   P2R R59, PR, RZ, 0x1 ;
+        /*0b80*/                   IMAD R66, R0.reuse, R5, R4 ;
+        /*0b90*/                   LOP3.LUT R46, R0.reuse, 0x60, RZ, 0xfc, !PT ;
+        /*0ba0*/                   LOP3.LUT R67, R0, 0x76, RZ, 0xfc, !PT ;
+        /*0bb0*/                   P2R R74, PR, RZ, 0x2 ;
+        /*0bc0*/                   ISETP.LT.AND P0, PT, R53, UR5, !P5 ;
+        /*0bd0*/                   LOP3.LUT R64, R0, 0x72, RZ, 0xfc, !PT ;
+        /*0be0*/                   ISETP.LT.AND P1, PT, R44, UR5, !P5 ;
+        /*0bf0*/                   ISETP.LT.AND P6, PT, R0.reuse, UR5, !P5 ;
+        /*0c00*/                   LOP3.LUT R47, R0, 0x62, RZ, 0xfc, !PT ;
+        /*0c10*/                   P2R R108, PR, RZ, 0x8 ;
+        /*0c20*/                   P2R R72, PR, RZ, 0x4 ;
+        /*0c30*/                   ISETP.LT.AND P2, PT, R46, UR5, !P5 ;
+        /*0c40*/                   P2R R56, PR, RZ, 0x1 ;
+        /*0c50*/                   ISETP.LT.AND P3, PT, R67, UR5, !P5 ;
+        /*0c60*/                   LOP3.LUT R49, R0.reuse, 0x66, RZ, 0xfc, !PT ;
+        /*0c70*/                   LOP3.LUT R65, R0, 0x74, RZ, 0xfc, !PT ;
+        /*0c80*/                   P2R R63, PR, RZ, 0x2 ;
+        /*0c90*/                   ISETP.LT.AND P0, PT, R64, UR5, !P5 ;
+        /*0ca0*/                   P2R R67, PR, RZ, 0x40 ;
+        /*0cb0*/                   ISETP.LT.AND P1, PT, R47, UR5, !P5 ;
+        /*0cc0*/                   LEA R64, P6, R66, UR8, 0x2 ;
+        /*0cd0*/                   LOP3.LUT R51, R0, 0x68, RZ, 0xfc, !PT ;
+        /*0ce0*/                   P2R R61, PR, RZ, 0x4 ;
+        /*0cf0*/                   ISETP.LT.AND P2, PT, R49, UR5, !P5 ;
+        /*0d00*/                   ISETP.LT.AND P4, PT, R65, UR5, !P5 ;
+        /*0d10*/                   LOP3.LUT R54, R0, 0x6c, RZ, 0xfc, !PT ;
+        /*0d20*/                   P2R R60, PR, RZ, 0x2 ;
+        /*0d30*/                   LEA.HI.X.SX32 R65, R66, UR9, 0x2, P6 ;
+        /*0d40*/                   ISETP.LT.AND P1, PT, R51, UR5, !P5 ;
+        /*0d50*/                   ISETP.NE.AND P6, PT, R67, RZ, PT ;
+        /*0d60*/                   LOP3.LUT R55, R0.reuse, 0x70, RZ, 0xfc, !PT ;
+        /*0d70*/                   LOP3.LUT R99, R0, 0x7c, RZ, 0xfc, !PT ;
+        /*0d80*/                   P2R R58, PR, RZ, 0x4 ;
+        /*0d90*/                   ISETP.LT.AND P2, PT, R54, UR5, !P5 ;
+        /*0da0*/                   LOP3.LUT R69, R0, 0x78, RZ, 0xfc, !PT ;
+        /*0db0*/                   P2R R57, PR, RZ, 0x2 ;
+        /*0dc0*/                   ISETP.LT.AND P1, PT, R55, UR5, !P5 ;
+        /*0dd0*/                   P2R R53, PR, RZ, 0x1 ;
+        /*0de0*/                   LEA.HI R16, R16, 0x7e, RZ, 0x1a ;
+        /*0df0*/                   LOP3.LUT R71, R0, 0x7a, RZ, 0xfc, !PT ;
+        /*0e00*/                   ISETP.LT.AND P0, PT, R99, UR5, !P5 ;
+        /*0e10*/                   IMAD.MOV.U32 R99, RZ, RZ, RZ ;
+        /*0e20*/                   P2R R55, PR, RZ, 0x4 ;
+        /*0e30*/                   ISETP.LT.AND P2, PT, R69, UR5, !P5 ;
+        /*0e40*/                   IMAD R69, R5, 0x2, R66 ;
+        /*0e50*/                   P2R R54, PR, RZ, 0x2 ;
+        /*0e60*/                   IMAD R2, R16.reuse, R5, R4 ;
+        /*0e70*/                   ISETP.LT.AND P1, PT, R71, UR5, !P5 ;
+        /*0e80*/                   IMAD R105, R5.reuse, 0x4, R66.reuse ;
+        /*0e90*/                   ISETP.LT.AND P5, PT, R16, UR5, !P5 ;
+        /*0ea0*/                   IMAD R71, R5.reuse, 0x6, R66.reuse ;
+        /*0eb0*/               @P6 LDG.E R99, desc[UR6][R64.64] ;
+        /*0ec0*/                   IMAD R120, R5, 0x8, R66 ;
+        /*0ed0*/                   IMAD R119, R5.reuse, 0xa, R66.reuse ;
+        /*0ee0*/                   IMAD R118, R5.reuse, 0xc, R66.reuse ;
+        /*0ef0*/                   IMAD R115, R5.reuse, 0x10, R66.reuse ;
+        /*0f00*/                   IMAD R113, R5.reuse, 0x12, R66.reuse ;
+        /*0f10*/                   IMAD R110, R5.reuse, 0x14, R66.reuse ;
+        /*0f20*/                   IMAD R106, R5, 0x16, R66 ;
+        /*0f30*/                   IMAD R104, R5.reuse, 0x18, R66.reuse ;
+        /*0f40*/                   IMAD R101, R5.reuse, 0x1a, R66.reuse ;
+        /*0f50*/                   IMAD R51, R5.reuse, 0x1c, R66.reuse ;
+        /*0f60*/                   IMAD R49, R5.reuse, 0x20, R66.reuse ;
+        /*0f70*/                   IMAD R48, R5.reuse, 0x22, R66.reuse ;
+        /*0f80*/                   IMAD R47, R5, 0x24, R66 ;
+        /*0f90*/                   IMAD R46, R5.reuse, 0x26, R66.reuse ;
+        /*0fa0*/                   IMAD R45, R5.reuse, 0x28, R66.reuse ;
+        /*0fb0*/                   IMAD R44, R5.reuse, 0x2a, R66.reuse ;
+        /*0fc0*/                   IMAD R43, R5.reuse, 0x2c, R66.reuse ;
+        /*0fd0*/                   IMAD R41, R5.reuse, 0x30, R66.reuse ;
+        /*0fe0*/                   IMAD R40, R5, 0x32, R66 ;
+        /*0ff0*/                   IMAD R39, R5.reuse, 0x34, R66.reuse ;
+        /*1000*/                   IMAD R38, R5.reuse, 0x36, R66.reuse ;
+        /*1010*/                   IMAD R37, R5.reuse, 0x38, R66.reuse ;
+        /*1020*/                   IMAD R36, R5.reuse, 0x3a, R66.reuse ;
+        /*1030*/                   IMAD R35, R5.reuse, 0x3c, R66.reuse ;
+        /*1040*/                   IMAD R33, R5, 0x40, R66 ;
+        /*1050*/                   IMAD R32, R5.reuse, 0x42, R66.reuse ;
+        /*1060*/                   IMAD R31, R5.reuse, 0x44, R66.reuse ;
+        /*1070*/                   IMAD R30, R5.reuse, 0x46, R66.reuse ;
+        /*1080*/                   IMAD R29, R5.reuse, 0x48, R66.reuse ;
+        /*1090*/                   IMAD R28, R5.reuse, 0x4a, R66.reuse ;
+        /*10a0*/                   IMAD R27, R5, 0x4c, R66 ;
+        /*10b0*/                   IMAD R25, R5.reuse, 0x50, R66.reuse ;
+        /*10c0*/                   IMAD R24, R5.reuse, 0x52, R66.reuse ;
+        /*10d0*/                   IMAD R23, R5.reuse, 0x54, R66.reuse ;
+        /*10e0*/                   IMAD R22, R5.reuse, 0x56, R66.reuse ;
+        /*10f0*/                   IMAD R21, R5.reuse, 0x58, R66.reuse ;
+        /*1100*/                   IMAD R20, R5, 0x5a, R66 ;
+        /*1110*/                   IMAD R19, R5.reuse, 0x5c, R66.reuse ;
+        /*1120*/                   IMAD R17, R5.reuse, 0x60, R66.reuse ;
+        /*1130*/                   IMAD R16, R5.reuse, 0x62, R66.reuse ;
+        /*1140*/                   IMAD R15, R5.reuse, 0x64, R66.reuse ;
+        /*1150*/                   IMAD R14, R5.reuse, 0x66, R66.reuse ;
+        /*1160*/                   IMAD R13, R5, 0x68, R66 ;
+        /*1170*/                   IMAD R0, R5.reuse, 0x6a, R66.reuse ;
+        /*1180*/                   IMAD R12, R5.reuse, 0x6c, R66.reuse ;
+        /*1190*/                   IMAD R10, R5.reuse, 0x70, R66.reuse ;
+        /*11a0*/                   IMAD R9, R5.reuse, 0x72, R66.reuse ;
+        /*11b0*/                   IMAD R8, R5.reuse, 0x74, R66.reuse ;
+        /*11c0*/                   IMAD R7, R5, 0x76, R66 ;
+        /*11d0*/                   IMAD R6, R5.reuse, 0x78, R66.reuse ;
+        /*11e0*/                   IMAD R4, R5.reuse, 0x7a, R66.reuse ;
+        /*11f0*/                   IMAD R5, R5, 0x7c, R66 ;
+        /*1200*/                   LEA R66, P6, R69, UR8, 0x2 ;
+        /*1210*/                   LEA.HI.X.SX32 R67, R69, UR9, 0x2, P6 ;
+        /*1220*/                   ISETP.NE.AND P6, PT, R68, RZ, PT ;
+        /*1230*/                   IMAD.MOV.U32 R102, RZ, RZ, RZ ;
+        /*1240*/               @P6 LDG.E R102, desc[UR6][R66.64] ;
+        /*1250*/                   LEA R68, P6, R105, UR8, 0x2 ;
+        /*1260*/                   LEA.HI.X.SX32 R69, R105, UR9, 0x2, P6 ;
+        /*1270*/                   ISETP.NE.AND P6, PT, R70, RZ, PT ;
+        /*1280*/                   IMAD.MOV.U32 R105, RZ, RZ, RZ ;
+        /*1290*/               @P6 LDG.E R105, desc[UR6][R68.64] ;
+        /*12a0*/                   LEA R70, P6, R71, UR8, 0x2 ;
+        /*12b0*/                   LEA.HI.X.SX32 R71, R71, UR9, 0x2, P6 ;
+        /*12c0*/                   ISETP.NE.AND P6, PT, R108, RZ, PT ;
+        /*12d0*/                   IMAD.MOV.U32 R108, RZ, RZ, RZ ;
+        /*12e0*/               @P6 LDG.E R108, desc[UR6][R70.64] ;
+        /*12f0*/                   LEA R64, P6, R120, UR8, 0x2 ;
+        /*1300*/                   LEA.HI.X.SX32 R65, R120, UR9, 0x2, P6 ;
+        /*1310*/                   ISETP.NE.AND P6, PT, R111, RZ, PT ;
+        /*1320*/                   IMAD.MOV.U32 R111, RZ, RZ, RZ ;
+        /*1330*/               @P6 LDG.E R111, desc[UR6][R64.64] ;
+        /*1340*/                   LEA R66, P6, R119, UR8, 0x2 ;
+        /*1350*/                   LEA.HI.X.SX32 R67, R119, UR9, 0x2, P6 ;
+        /*1360*/                   ISETP.NE.AND P6, PT, R114, RZ, PT ;
+        /*1370*/                   IMAD.MOV.U32 R114, RZ, RZ, RZ ;
+        /*1380*/               @P6 LDG.E R114, desc[UR6][R66.64] ;
+        /*1390*/                   LEA R68, P6, R118, UR8, 0x2 ;
+        /*13a0*/                   LEA.HI.X.SX32 R69, R118, UR9, 0x2, P6 ;
+        /*13b0*/                   ISETP.NE.AND P6, PT, R117, RZ, PT ;
+        /*13c0*/                   IMAD.MOV.U32 R117, RZ, RZ, RZ ;
+        /*13d0*/               @P6 LDG.E R117, desc[UR6][R68.64] ;
+        /*13e0*/                   LEA R70, P6, R115, UR8, 0x2 ;
+        /*13f0*/                   LEA.HI.X.SX32 R71, R115, UR9, 0x2, P6 ;
+        /*1400*/                   ISETP.NE.AND P6, PT, R116, RZ, PT ;
+        /*1410*/                   IMAD.MOV.U32 R115, RZ, RZ, RZ ;
+        /*1420*/               @P6 LDG.E R115, desc[UR6][R70.64] ;
+        /*1430*/                   LEA R64, P6, R113, UR8, 0x2 ;
+        /*1440*/                   LEA.HI.X.SX32 R65, R113, UR9, 0x2, P6 ;
+        /*1450*/                   ISETP.NE.AND P6, PT, R112, RZ, PT ;
+        /*1460*/                   IMAD.MOV.U32 R112, RZ, RZ, RZ ;
+        /*1470*/               @P6 LDG.E R112, desc[UR6][R64.64] ;
+        /*1480*/                   LEA R66, P6, R110, UR8, 0x2 ;
+        /*1490*/                   LEA.HI.X.SX32 R67, R110, UR9, 0x2, P6 ;
+        /*14a0*/                   ISETP.NE.AND P6, PT, R109, RZ, PT ;
+        /*14b0*/                   IMAD.MOV.U32 R109, RZ, RZ, RZ ;
+        /*14c0*/               @P6 LDG.E R109, desc[UR6][R66.64] ;
+        /*14d0*/                   LEA R68, P6, R106, UR8, 0x2 ;
+        /*14e0*/                   LEA.HI.X.SX32 R69, R106, UR9, 0x2, P6 ;
+        /*14f0*/                   ISETP.NE.AND P6, PT, R107, RZ, PT ;
+        /*1500*/                   IMAD.MOV.U32 R106, RZ, RZ, RZ ;
+        /*1510*/               @P6 LDG.E R106, desc[UR6][R68.64] ;
+        /*1520*/                   LEA R70, P6, R104, UR8, 0x2 ;
+        /*1530*/                   LEA.HI.X.SX32 R71, R104, UR9, 0x2, P6 ;
+        /*1540*/                   ISETP.NE.AND P6, PT, R103, RZ, PT ;
+        /*1550*/                   IMAD.MOV.U32 R103, RZ, RZ, RZ ;
+        /*1560*/               @P6 LDG.E R103, desc[UR6][R70.64] ;
+        /*1570*/                   LEA R64, P6, R101, UR8, 0x2 ;
+        /*1580*/                   LEA.HI.X.SX32 R65, R101, UR9, 0x2, P6 ;
+        /*1590*/                   ISETP.NE.AND P6, PT, R100, RZ, PT ;
+        /*15a0*/                   IMAD.MOV.U32 R100, RZ, RZ, RZ ;
+        /*15b0*/               @P6 LDG.E R100, desc[UR6][R64.64] ;
+        /*15c0*/                   LEA R66, P6, R51, UR8, 0x2 ;
+        /*15d0*/                   LEA.HI.X.SX32 R67, R51, UR9, 0x2, P6 ;
+        /*15e0*/                   ISETP.NE.AND P6, PT, R98, RZ, PT ;
+        /*15f0*/                   IMAD.MOV.U32 R51, RZ, RZ, RZ ;
+        /*1600*/               @P6 LDG.E R51, desc[UR6][R66.64] ;
+        /*1610*/                   LEA R68, P6, R49, UR8, 0x2 ;
+        /*1620*/                   LEA.HI.X.SX32 R69, R49, UR9, 0x2, P6 ;
+        /*1630*/                   ISETP.NE.AND P6, PT, R97, RZ, PT ;
+        /*1640*/                   IMAD.MOV.U32 R97, RZ, RZ, RZ ;
+        /*1650*/               @P6 LDG.E R97, desc[UR6][R68.64] ;
+        /*1660*/                   LEA R70, P6, R48, UR8, 0x2 ;
+        /*1670*/                   LEA.HI.X.SX32 R71, R48, UR9, 0x2, P6 ;
+        /*1680*/                   ISETP.NE.AND P6, PT, R96, RZ, PT ;
+        /*1690*/                   IMAD.MOV.U32 R96, RZ, RZ, RZ ;
+        /*16a0*/               @P6 LDG.E R96, desc[UR6][R70.64] ;
+        /*16b0*/                   LEA R48, P6, R47, UR8, 0x2 ;
+        /*16c0*/                   LEA.HI.X.SX32 R49, R47, UR9, 0x2, P6 ;
+        /*16d0*/                   ISETP.NE.AND P6, PT, R95, RZ, PT ;
+        /*16e0*/                   IMAD.MOV.U32 R95, RZ, RZ, RZ ;
+        /*16f0*/               @P6 LDG.E R95, desc[UR6][R48.64] ;
+        /*1700*/                   LEA R64, P6, R46, UR8, 0x2 ;
+        /*1710*/                   LEA.HI.X.SX32 R65, R46, UR9, 0x2, P6 ;
+        /*1720*/                   ISETP.NE.AND P6, PT, R94, RZ, PT ;
+        /*1730*/                   CS2R R68, SRZ ;
+        /*1740*/               @P6 LDG.E R68, desc[UR6][R64.64] ;
+        /*1750*/                   LEA R46, P6, R45, UR8, 0x2 ;
+        /*1760*/                   LEA.HI.X.SX32 R47, R45, UR9, 0x2, P6 ;
+        /*1770*/                   ISETP.NE.AND P6, PT, R93, RZ, PT ;
+        /*1780*/               @P6 LDG.E R69, desc[UR6][R46.64] ;
+        /*1790*/                   LEA R66, P6, R44, UR8, 0x2 ;
+        /*17a0*/                   LEA.HI.X.SX32 R67, R44, UR9, 0x2, P6 ;
+        /*17b0*/                   ISETP.NE.AND P6, PT, R92, RZ, PT ;
+        /*17c0*/                   IMAD.MOV.U32 R70, RZ, RZ, RZ ;
+        /*17d0*/               @P6 LDG.E R70, desc[UR6][R66.64] ;
+        /*17e0*/                   LEA R44, P6, R43, UR8, 0x2 ;
+        /*17f0*/                   LEA.HI.X.SX32 R45, R43, UR9, 0x2, P6 ;
+        /*1800*/                   ISETP.NE.AND P6, PT, R91, RZ, PT ;
+        /*1810*/                   IMAD.MOV.U32 R43, RZ, RZ, RZ ;
+        /*1820*/               @P6 LDG.E R43, desc[UR6][R44.64] ;
+        /*1830*/                   LEA R48, P6, R41, UR8, 0x2 ;
+        /*1840*/                   LEA.HI.X.SX32 R49, R41, UR9, 0x2, P6 ;
+        /*1850*/                   ISETP.NE.AND P6, PT, R90, RZ, PT ;
+        /*1860*/                   CS2R R64, SRZ ;
+        /*1870*/               @P6 LDG.E R64, desc[UR6][R48.64] ;
+        /*1880*/                   LEA R46, P6, R40, UR8, 0x2 ;
+        /*1890*/                   LEA.HI.X.SX32 R47, R40, UR9, 0x2, P6 ;
+        /*18a0*/                   ISETP.NE.AND P6, PT, R89, RZ, PT ;
+        /*18b0*/               @P6 LDG.E R65, desc[UR6][R46.64] ;
+        /*18c0*/                   LEA R40, P6, R39, UR8, 0x2 ;
+        /*18d0*/                   LEA.HI.X.SX32 R41, R39, UR9, 0x2, P6 ;
+        /*18e0*/                   ISETP.NE.AND P6, PT, R88, RZ, PT ;
+        /*18f0*/                   CS2R R66, SRZ ;
+        /*1900*/               @P6 LDG.E R66, desc[UR6][R40.64] ;
+        /*1910*/                   LEA R44, P6, R38, UR8, 0x2 ;
+        /*1920*/                   LEA.HI.X.SX32 R45, R38, UR9, 0x2, P6 ;
+        /*1930*/                   ISETP.NE.AND P6, PT, R87, RZ, PT ;
+        /*1940*/                   CS2R R48, SRZ ;
+        /*1950*/               @P6 LDG.E R48, desc[UR6][R44.64] ;
+        /*1960*/                   LEA R38, P6, R37, UR8, 0x2 ;
+        /*1970*/                   LEA.HI.X.SX32 R39, R37, UR9, 0x2, P6 ;
+        /*1980*/                   ISETP.NE.AND P6, PT, R86, RZ, PT ;
+        /*1990*/               @P6 LDG.E R49, desc[UR6][R38.64] ;
+        /*19a0*/                   LEA R46, P6, R36, UR8, 0x2 ;
+        /*19b0*/                   LEA.HI.X.SX32 R47, R36, UR9, 0x2, P6 ;
+        /*19c0*/                   ISETP.NE.AND P6, PT, R85, RZ, PT ;
+        /*19d0*/               @P6 LDG.E R67, desc[UR6][R46.64] ;
+        /*19e0*/                   LEA R36, P6, R35, UR8, 0x2 ;
+        /*19f0*/                   LEA.HI.X.SX32 R37, R35, UR9, 0x2, P6 ;
+        /*1a00*/                   ISETP.NE.AND P6, PT, R84, RZ, PT ;
+        /*1a10*/                   IMAD.MOV.U32 R35, RZ, RZ, RZ ;
+        /*1a20*/               @P6 LDG.E R35, desc[UR6][R36.64] ;
+        /*1a30*/                   LEA R40, P6, R33, UR8, 0x2 ;
+        /*1a40*/                   LEA.HI.X.SX32 R41, R33, UR9, 0x2, P6 ;
+        /*1a50*/                   ISETP.NE.AND P6, PT, R83, RZ, PT ;
+        /*1a60*/                   CS2R R44, SRZ ;
+        /*1a70*/               @P6 LDG.E R44, desc[UR6][R40.64] ;
+        /*1a80*/                   LEA R38, P6, R32, UR8, 0x2 ;
+        /*1a90*/                   LEA.HI.X.SX32 R39, R32, UR9, 0x2, P6 ;
+        /*1aa0*/                   ISETP.NE.AND P6, PT, R82, RZ, PT ;
+        /*1ab0*/               @P6 LDG.E R45, desc[UR6][R38.64] ;
+        /*1ac0*/                   LEA R32, P6, R31, UR8, 0x2 ;
+        /*1ad0*/                   LEA.HI.X.SX32 R33, R31, UR9, 0x2, P6 ;
+        /*1ae0*/                   ISETP.NE.AND P6, PT, R81, RZ, PT ;
+        /*1af0*/                   CS2R R46, SRZ ;
+        /*1b00*/               @P6 LDG.E R46, desc[UR6][R32.64] ;
+        /*1b10*/                   LEA R36, P6, R30, UR8, 0x2 ;
+        /*1b20*/                   LEA.HI.X.SX32 R37, R30, UR9, 0x2, P6 ;
+        /*1b30*/                   ISETP.NE.AND P6, PT, R80, RZ, PT ;
+        /*1b40*/                   CS2R R40, SRZ ;
+        /*1b50*/               @P6 LDG.E R40, desc[UR6][R36.64] ;
+        /*1b60*/                   LEA R30, P6, R29, UR8, 0x2 ;
+        /*1b70*/                   LEA.HI.X.SX32 R31, R29, UR9, 0x2, P6 ;
+        /*1b80*/                   ISETP.NE.AND P6, PT, R79, RZ, PT ;
+        /*1b90*/               @P6 LDG.E R41, desc[UR6][R30.64] ;
+        /*1ba0*/                   LEA R38, P6, R28, UR8, 0x2 ;
+        /*1bb0*/                   LEA.HI.X.SX32 R39, R28, UR9, 0x2, P6 ;
+        /*1bc0*/                   ISETP.NE.AND P6, PT, R78, RZ, PT ;
+        /*1bd0*/               @P6 LDG.E R47, desc[UR6][R38.64] ;
+        /*1be0*/                   LEA R28, P6, R27, UR8, 0x2 ;
+        /*1bf0*/                   LEA.HI.X.SX32 R29, R27, UR9, 0x2, P6 ;
+        /*1c00*/                   ISETP.NE.AND P6, PT, R77, RZ, PT ;
+        /*1c10*/                   IMAD.MOV.U32 R27, RZ, RZ, RZ ;
+        /*1c20*/               @P6 LDG.E R27, desc[UR6][R28.64] ;
+        /*1c30*/                   LEA R32, P6, R25, UR8, 0x2 ;
+        /*1c40*/                   LEA.HI.X.SX32 R33, R25, UR9, 0x2, P6 ;
+        /*1c50*/                   ISETP.NE.AND P6, PT, R76, RZ, PT ;
+        /*1c60*/                   CS2R R36, SRZ ;
+        /*1c70*/               @P6 LDG.E R36, desc[UR6][R32.64] ;
+        /*1c80*/                   LEA R30, P6, R24, UR8, 0x2 ;
+        /*1c90*/                   LEA.HI.X.SX32 R31, R24, UR9, 0x2, P6 ;
+        /*1ca0*/                   ISETP.NE.AND P6, PT, R75, RZ, PT ;
+        /*1cb0*/               @P6 LDG.E R37, desc[UR6][R30.64] ;
+        /*1cc0*/                   LEA R24, P6, R23, UR8, 0x2 ;
+        /*1cd0*/                   LEA.HI.X.SX32 R25, R23, UR9, 0x2, P6 ;
+        /*1ce0*/                   ISETP.NE.AND P6, PT, R74, RZ, PT ;
+        /*1cf0*/                   CS2R R38, SRZ ;
+        /*1d00*/               @P6 LDG.E R38, desc[UR6][R24.64] ;
+        /*1d10*/                   LEA R28, P6, R22, UR8, 0x2 ;
+        /*1d20*/                   LEA.HI.X.SX32 R29, R22, UR9, 0x2, P6 ;
+        /*1d30*/                   ISETP.NE.AND P6, PT, R73, RZ, PT ;
+        /*1d40*/                   CS2R R32, SRZ ;
+        /*1d50*/               @P6 LDG.E R32, desc[UR6][R28.64] ;
+        /*1d60*/                   LEA R22, P6, R21, UR8, 0x2 ;
+        /*1d70*/                   LEA.HI.X.SX32 R23, R21, UR9, 0x2, P6 ;
+        /*1d80*/                   ISETP.NE.AND P6, PT, R72, RZ, PT ;
+        /*1d90*/               @P6 LDG.E R33, desc[UR6][R22.64] ;
+        /*1da0*/                   LEA R30, P6, R20, UR8, 0x2 ;
+        /*1db0*/                   LEA.HI.X.SX32 R31, R20, UR9, 0x2, P6 ;
+        /*1dc0*/                   ISETP.NE.AND P6, PT, R63, RZ, PT ;
+        /*1dd0*/               @P6 LDG.E R39, desc[UR6][R30.64] ;
+        /*1de0*/                   LEA R20, P6, R19, UR8, 0x2 ;
+        /*1df0*/                   LEA.HI.X.SX32 R21, R19, UR9, 0x2, P6 ;
+        /*1e00*/                   ISETP.NE.AND P6, PT, R62, RZ, PT ;
+        /*1e10*/                   IMAD.MOV.U32 R19, RZ, RZ, RZ ;
+        /*1e20*/               @P6 LDG.E R19, desc[UR6][R20.64] ;
+        /*1e30*/                   LEA R24, P6, R17, UR8, 0x2 ;
+        /*1e40*/                   LEA.HI.X.SX32 R25, R17, UR9, 0x2, P6 ;
+        /*1e50*/                   ISETP.NE.AND P6, PT, R61, RZ, PT ;
+        /*1e60*/                   CS2R R28, SRZ ;
+        /*1e70*/               @P6 LDG.E R28, desc[UR6][R24.64] ;
+        /*1e80*/                   LEA R22, P6, R16, UR8, 0x2 ;
+        /*1e90*/                   LEA.HI.X.SX32 R23, R16, UR9, 0x2, P6 ;
+        /*1ea0*/                   ISETP.NE.AND P6, PT, R60, RZ, PT ;
+        /*1eb0*/               @P6 LDG.E R29, desc[UR6][R22.64] ;
+        /*1ec0*/                   LEA R16, P6, R15, UR8, 0x2 ;
+        /*1ed0*/                   LEA.HI.X.SX32 R17, R15, UR9, 0x2, P6 ;
+        /*1ee0*/                   ISETP.NE.AND P6, PT, R59, RZ, PT ;
+        /*1ef0*/                   CS2R R30, SRZ ;
+        /*1f00*/               @P6 LDG.E R30, desc[UR6][R16.64] ;
+        /*1f10*/                   LEA R20, P6, R14, UR8, 0x2 ;
+        /*1f20*/                   LEA.HI.X.SX32 R21, R14, UR9, 0x2, P6 ;
+        /*1f30*/                   ISETP.NE.AND P6, PT, R58, RZ, PT ;
+        /*1f40*/                   CS2R R24, SRZ ;
+        /*1f50*/               @P6 LDG.E R24, desc[UR6][R20.64] ;
+        /*1f60*/                   LEA R14, P6, R13, UR8, 0x2 ;
+        /*1f70*/                   LEA.HI.X.SX32 R15, R13, UR9, 0x2, P6 ;
+        /*1f80*/                   ISETP.NE.AND P6, PT, R57, RZ, PT ;
+        /*1f90*/               @P6 LDG.E R25, desc[UR6][R14.64] ;
+        /*1fa0*/                   LEA R22, P6, R0, UR8, 0x2 ;
+        /*1fb0*/                   LEA.HI.X.SX32 R23, R0, UR9, 0x2, P6 ;
+        /*1fc0*/                   ISETP.NE.AND P6, PT, R56, RZ, PT ;
+        /*1fd0*/                   IMAD.MOV.U32 R0, RZ, RZ, RZ ;
+        /*1fe0*/               @P6 LDG.E R0, desc[UR6][R22.64] ;
+        /*1ff0*/                   LEA R16, P6, R12, UR8, 0x2 ;
+        /*2000*/                   LEA.HI.X.SX32 R17, R12, UR9, 0x2, P6 ;
+        /*2010*/                   ISETP.NE.AND P6, PT, R55, RZ, PT ;
+        /*2020*/               @P6 LDG.E R31, desc[UR6][R16.64] ;
+        /*2030*/                   LEA R12, P6, R10, UR8, 0x2 ;
+        /*2040*/                   LEA.HI.X.SX32 R13, R10, UR9, 0x2, P6 ;
+        /*2050*/                   ISETP.NE.AND P6, PT, R54, RZ, PT ;
+        /*2060*/                   IMAD.MOV.U32 R10, RZ, RZ, RZ ;
+        /*2070*/               @P6 LDG.E R10, desc[UR6][R12.64] ;
+        /*2080*/                   LEA R14, P6, R9, UR8, 0x2 ;
+        /*2090*/                   LEA.HI.X.SX32 R15, R9, UR9, 0x2, P6 ;
+        /*20a0*/                   ISETP.NE.AND P6, PT, R53, RZ, PT ;
+        /*20b0*/                   IMAD.MOV.U32 R22, RZ, RZ, RZ ;
+        /*20c0*/                   CS2R R16, SRZ ;
+        /*20d0*/               @P6 LDG.E R22, desc[UR6][R14.64] ;
+        /*20e0*/                   LEA R20, P6, R8, UR8, 0x2 ;
+        /*20f0*/                   LEA.HI.X.SX32 R21, R8, UR9, 0x2, P6 ;
+        /*2100*/               @P4 LDG.E R16, desc[UR6][R20.64] ;
+        /*2110*/                   LEA R8, P4, R7, UR8, 0x2 ;
+        /*2120*/                   LEA.HI.X.SX32 R9, R7, UR9, 0x2, P4 ;
+        /*2130*/                   CS2R R14, SRZ ;
+        /*2140*/               @P3 LDG.E R17, desc[UR6][R8.64] ;
+        /*2150*/                   LEA R12, P3, R6, UR8, 0x2 ;
+        /*2160*/                   LEA.HI.X.SX32 R13, R6, UR9, 0x2, P3 ;
+        /*2170*/               @P2 LDG.E R14, desc[UR6][R12.64] ;
+        /*2180*/                   LEA R6, P2, R4, UR8, 0x2 ;
+        /*2190*/                   LEA.HI.X.SX32 R7, R4, UR9, 0x2, P2 ;
+        /*21a0*/                   IMAD.MOV.U32 R20, RZ, RZ, RZ ;
+        /*21b0*/               @P1 LDG.E R15, desc[UR6][R6.64] ;
+        /*21c0*/                   LEA R4, P1, R5, UR8, 0x2 ;
+        /*21d0*/                   LEA.HI.X.SX32 R5, R5, UR9, 0x2, P1 ;
+        /*21e0*/               @P0 LDG.E R20, desc[UR6][R4.64] ;
+        /*21f0*/                   LEA R8, P0, R2, UR8, 0x2 ;
+        /*2200*/                   LEA.HI.X.SX32 R9, R2, UR9, 0x2, P0 ;
+        /*2210*/                   IMAD.MOV.U32 R2, RZ, RZ, RZ ;
+        /*2220*/                   FADD R102, R102, R99 ;
+        /*2230*/                   S2UR UR5, SR_CgaCtaId ;
+        /*2240*/                   UMOV UR4, 0x400 ;
+        /*2250*/                   ULDC.64 UR8, c[0x0][0x230] ;
+        /*2260*/               @P5 LDG.E R2, desc[UR6][R8.64] ;
+        /*2270*/                   FADD R105, R102, R105 ;
+        /*2280*/                   FADD R108, R105, R108 ;
+        /*2290*/                   FADD R111, R108, R111 ;
+        /*22a0*/                   FADD R114, R111, R114 ;
+        /*22b0*/                   FADD R117, R114, R117 ;
+        /*22c0*/                   FADD R52, R117, R52 ;
+        /*22d0*/                   FADD R115, R52, R115 ;
+        /*22e0*/                   FADD R112, R115, R112 ;
+        /*22f0*/                   FADD R109, R112, R109 ;
+        /*2300*/                   FADD R106, R109, R106 ;
+        /*2310*/                   FADD R103, R106, R103 ;
+        /*2320*/                   FADD R100, R103, R100 ;
+        /*2330*/                   FADD R51, R100, R51 ;
+        /*2340*/                   FADD R50, R51, R50 ;
+        /*2350*/                   FADD R97, R50, R97 ;
+        /*2360*/                   FADD R96, R97, R96 ;
+        /*2370*/                   FADD R95, R96, R95 ;
+        /*2380*/                   FADD R68, R95, R68 ;
+        /*2390*/                   FADD R69, R68, R69 ;
+        /*23a0*/                   FADD R70, R69, R70 ;
+        /*23b0*/                   FADD R43, R70, R43 ;
+        /*23c0*/                   FADD R43, R43, R42 ;
+        /*23d0*/                   FADD R64, R43, R64 ;
+        /*23e0*/                   FADD R65, R64, R65 ;
+        /*23f0*/                   FADD R65, R65, R66 ;
+        /*2400*/                   FADD R48, R65, R48 ;
+        /*2410*/                   FADD R48, R48, R49 ;
+        /*2420*/                   FADD R48, R48, R67 ;
+        /*2430*/                   FADD R35, R48, R35 ;
+        /*2440*/                   FADD R35, R35, R34 ;
+        /*2450*/                   FADD R44, R35, R44 ;
+        /*2460*/                   FADD R45, R44, R45 ;
+        /*2470*/                   FADD R45, R45, R46 ;
+        /*2480*/                   FADD R40, R45, R40 ;
+        /*2490*/                   FADD R40, R40, R41 ;
+        /*24a0*/                   FADD R40, R40, R47 ;
+        /*24b0*/                   FADD R27, R40, R27 ;
+        /*24c0*/                   FADD R27, R27, R26 ;
+        /*24d0*/                   FADD R36, R27, R36 ;
+        /*24e0*/                   FADD R37, R36, R37 ;
+        /*24f0*/                   FADD R37, R37, R38 ;
+        /*2500*/                   FADD R32, R37, R32 ;
+        /*2510*/                   FADD R32, R32, R33 ;
+        /*2520*/                   FADD R32, R32, R39 ;
+        /*2530*/                   FADD R19, R32, R19 ;
+        /*2540*/                   FADD R19, R19, R18 ;
+        /*2550*/                   FADD R28, R19, R28 ;
+        /*2560*/                   FADD R29, R28, R29 ;
+        /*2570*/                   FADD R29, R29, R30 ;
+        /*2580*/                   FADD R24, R29, R24 ;
+        /*2590*/                   S2R R8, SR_TID.X ;
+        /*25a0*/                   FADD R25, R24, R25 ;
+        /*25b0*/                   FADD R0, R25, R0 ;
+        /*25c0*/                   FADD R0, R0, R31 ;
+        /*25d0*/                   FADD R11, R0, R11 ;
+        /*25e0*/                   FADD R11, R11, R10 ;
+        /*25f0*/                   ULEA UR4, UR5, UR4, 0x18 ;
+        /*2600*/                   FADD R11, R11, R22 ;
+        /*2610*/                   FADD R16, R11, R16 ;
+        /*2620*/                   SHF.R.U32.HI R5, RZ, 0x6, R8 ;
+        /*2630*/                   LOP3.LUT R0, R8, 0x3f, RZ, 0xc0, !PT ;
+        /*2640*/                   FADD R17, R16, R17 ;
+        /*2650*/                   SGXT.U32 R5, R5, 0x1 ;
+        /*2660*/                   LEA R0, R0, UR4, 0x3 ;
+        /*2670*/                   FADD R14, R17, R14 ;
+        /*2680*/                   IMAD R5, R5, 0x4, R0 ;
+        /*2690*/                   FADD R15, R14, R15 ;
+        /*26a0*/                   FADD R15, R15, R20 ;
+        /*26b0*/                   FADD R2, R15, R2 ;
+        /*26c0*/                   STS [R5], R2 ;
+        /*26d0*/                   LOP3.LUT R4, R8, 0x7f, RZ, 0xc0, !PT ;
+        /*26e0*/                   LEA R4, R4, UR4, 0x2 ;
+        /*26f0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*2700*/                   LOP3.LUT P2, RZ, R8.reuse, 0x1, RZ, 0xc0, !PT ;
+        /*2710*/                   ISETP.LT.AND P0, PT, RZ, UR9, PT ;
+        /*2720*/                   LOP3.LUT P1, RZ, R8, 0x40, RZ, 0xc0, !PT ;
+        /*2730*/                   ULDC UR4, c[0x0][0x238] ;
+        /*2740*/                   LDS R6, [R4] ;
+        /*2750*/                   ISETP.LT.AND P0, PT, R3, UR8, P0 ;
+        /*2760*/                   SHFL.BFLY PT, R7, R6, 0x1, 0x1f ;
+        /*2770*/                   PLOP3.LUT P0, PT, P1, P0, PT, 0x8, 0x0 ;
+        /*2780*/                   IMAD R3, R3, UR4, RZ ;
+        /*2790*/                   ULDC.64 UR4, c[0x0][0x228] ;
+        /*27a0*/                   FADD R7, R6, R7 ;
+        /*27b0*/              @!P2 STS [R4], R7 ;
+        /*27c0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*27d0*/                   LEA R2, P1, R3, UR4, 0x2 ;
+        /*27e0*/                   LEA.HI.X.SX32 R3, R3, UR5, 0x2, P1 ;
+        /*27f0*/              @!P0 EXIT ;
+        /*2800*/                   LDS R5, [R0] ;
+        /*2810*/                   STG.E desc[UR6][R2.64], R5 ;
+        /*2820*/                   EXIT ;
+.L_x_0:
+        /*2830*/                   BRA `(.L_x_0);
+        /*2840*/                   NOP;
+        /*2850*/                   NOP;
+        /*2860*/                   NOP;
+        /*2870*/                   NOP;
+        /*2880*/                   NOP;
+        /*2890*/                   NOP;
+        /*28a0*/                   NOP;
+        /*28b0*/                   NOP;
+        /*28c0*/                   NOP;
+        /*28d0*/                   NOP;
+        /*28e0*/                   NOP;
+        /*28f0*/                   NOP;
+.L_x_1:
+
+
+//--------------------- SYMBOLS --------------------------
+
+	.type		.nv.reservedSmem.offset0,@object
+	.size		.nv.reservedSmem.offset0,0x4
+</code></pre>
+  </details>
+
+  <h2>Argument hints: the missing AssumeOp equivalent</h2>
+  <p>Native cuTile feeds tileiras <code>AssumeOp</code> chains derived from <code>ArraySpec</code>; the Triton equivalent — <code>tt.divisibility</code> argument attributes feeding the AxisInfo vectorization analysis — was initially missing entirely, and every global access compiled to scalar <code>LDG.E</code>. The full mapping is now emitted: <code>Alignment</code> → divisibility on pointer args, <code>ShapeDivBy</code> → divisibility on size args (this one is load-bearing for <em>masked</em> loads: the mask <code>offs &lt; n</code> only vectorizes when the <em>bound</em> is provably divisible, making the mask constant per 4-element group), <code>StrideDivBy</code> → divisibility on strides, and <code>Contiguous</code> → a <b>compile-time constant 1</b> inner stride (attributes can't express "equals 1"; AxisInfo needs the literal — Python's equal-to-1 specialization, done statically). Result: <code>LDG.E.128/STG.E.128</code> throughout, and <b>fmha 87→289&nbsp;TF, moe 17→52, batchmatmul 21→58</b>.</p>
+  <p>One measured twist: on the tf32 matmul the same hints <em>cost</em> 30% (vectorized operand layouts perturb that kernel's tensor-core pipeline) while tripling batchmatmul — shape-dependent, so hint emission joined warp count as a second <b>autotune dimension</b>: dot-kernels race {hints, no-hints} × {4, 8 warps} once per specialization. Every kernel lands at its best configuration with zero manual tuning, and the full test suite is unchanged at 1,810 passes.</p>
+
+  <h3>NegInf padding on TMA — built, measured, autotuned</h3>
+  <p>The fmha blocker ("TMA can't fill −∞") is now solved generally: NegInf-padded loads on descriptor-eligible views lower to <code>select(inbounds_mask, tma_load(view), −∞)</code> — TMA zero-fill moves the data, register-only index math restores the semantics (the transformation hand-written Triton attention kernels apply). Descriptors were also extended from 2-D to CUtensorMap's full 2–5-D range, which fmha's 4-D <code>1×1×128×64</code> loads need. Verified against fmha's CPU reference. The measurement then overruled the hypothesis: 4-D descriptor loads run <em>slower</em> (240&nbsp;TF) than divisibility-hinted vectorized pointer loads (291&nbsp;TF) for this shape on Triton 3.7/sm90 — so load style joined the autotune race ({TMA, pointer}×{hints}×{4,8 warps}, deduplicated) and every kernel keeps its measured best. The remaining fmha gap to native (365) is tileiras' automatic warp specialization, not memory access.</p>
+
+  <h2>What tileiras schedules, and closing the gap automatically</h2>
+  <p>Reading <code>EIATTR_REQNTID</code> out of every natively-compiled example kernel: <b>tileiras only ever picks 4, 8, or 12 warps</b> — 4 for memory-bound kernels (our default already matches), 8 for single-tile tensor-core kernels (255 regs/thread on matmul and layernorm-fwd), and 12 (384 threads, a producer/consumer warp-specialization structure) with ~200&nbsp;KB static shared memory for its deep-TMA-pipeline kernels (batchmatmul, moe, fft, layernorm-bwd). Notably, on several kernels where tileiras picks 8–12 warps, our 4-warp Triton builds still win — the warps serve its pipeline structure, not the workload per se.</p>
+  <p>Two mechanisms now close the schedule gap in the backend: a <b>heuristic</b> (kernels containing <code>tt.dot</code> default to 8 warps — fmha went 60→87&nbsp;TF from this alone) and a <b>first-launch autotuner</b> mirroring <code>@triton.autotune</code>: for dot-kernels without atomics (rerun-safety), both 4- and 8-warp builds are compiled and raced once per specialization, the winner cached. Result: fmha keeps 87&nbsp;TF (picks 8), matmul keeps 67&nbsp;TF (picks 4 at these shapes), batchmatmul keeps 21 (picks 4) — no regressions from the heuristic anywhere. Upstream Triton itself ships no schedule estimator (defaults are literally <code>num_warps=4, num_stages=3</code> dataclass constants; the in-tree perf model was removed with <code>triton.ops</code>) — choice lives in consumer-side formulas (TorchInductor) or measurement.</p>
+
+  <h2>Upstream outlook</h2>
+  <p>Research into triton-lang/triton (mid-2026) confirms our descriptor findings align with upstream direction — and that some of what we measured is unreported:</p>
+  <ul>
+    <li><b>Upstream's answer to device-side descriptor cost is "don't":</b> PR #4498 (by-value <code>__grid_constant__</code> descriptors) explicitly rejected device-side creation over the same L2/fence costs we measured; PR #8786 (cheap in-kernel descriptor <em>updates</em>) was rejected in favor of <b>ragged TMA</b> (<code>triton/tools/ragged_tma.py</code> — one host descriptor + stride wraparound tricks). Host-side <code>TensorDescriptor</code> is the blessed path (tutorials converted in #6465, PyTorch standardized on it, launch overhead tuned in #7987).</li>
+    <li><b>Triton's launcher already does what NVIDIA's driver does</b> — <code>fill_tma_descriptor_tiled</code> in the backend driver builds the CUtensorMap per launch from <code>tensordesc_meta</code> — but only for explicitly host-side descriptor kernel args. <b>No pass auto-hoists device-side <code>make_tensor_descriptor</code> to the launcher.</b> Our production plan (host-side unconditionally, since cuTile shapes are always launch-known) does for cuTile what no Triton frontend currently gets automatically.</li>
+    <li><b>The Tile IR convergence is real:</b> the <code>triton-lang/Triton-to-tile-IR</code> incubator lowers Triton to NVIDIA's Tile IR, where tileiras decides host-vs-device descriptor placement automatically — the exact mechanism we reverse-engineered. Currently Blackwell-only (CUDA 13.1+); meetup notes say descriptor APIs are needed for perf today "but will be fixed in 13.2".</li>
+    <li><b>Our tf32-descriptor slowness appears unreported upstream</b> (no issue matches; the official TMA tutorials are fp16/fp8-only, and issue #10229 shows device-side descriptor creation doesn't even survive the software pipeliner in some cases). Filing it would be a novel contribution.</li>
+  </ul>
+
+  <h2>Roadmap</h2>
+  <ol class="roadmap">
+    <li>
+      <b>Backend seam + core op coverage <span class="chip pass">Prototyped</span></b>
+      <p>Done outside the package: <span class="mono">TritonEmitter.jl</span> consumes <code>code_structured</code> output and covers grid/views/arith/math/mma/reduce/scf control flow; correctness across dtypes, ragged sizes, padding modes, and persistent loops. Remaining: fold into cuTile.jl as a proper target behind <code>emit_intrinsic!</code>.</p>
+    </li>
+    <li>
+      <b>Remaining intrinsics + tuning <span class="chip pass">TMA done</span></b>
+      <p>Descriptor lowering landed (f16 matmul: 114 → 541 TF, above tileiras and cuBLAS). Remaining: gather/scatter, atomics, scan, RNG, fp8; runtime-checked stride divisibility for TMA legality via <code>ArraySpec</code>; num_warps/num_stages heuristics or autotuning; revisit tf32 descriptors on future Triton versions.</p>
+    </li>
+    <li>
+      <b>AMD validation</b>
+      <p>The hsaco already compiles from the same TTIR; wire the AMDGPU.jl launcher (warp_size 64 on CDNA) and validate/tune on ROCm hardware.</p>
+    </li>
+    <li>
+      <b>Hardening + CPU decision</b>
+      <p>Cache integration (LMDB, CI-attached results), precompile story, wheel-pin policy. Decide the CPU leg: triton-shared pipeline vs. MLIRKernels-style lowering vs. building triton-cpu. Optionally start <code>Triton_jll</code> for the Python-free endgame.</p>
+    </li>
+  </ol>
+
+  <p class="footnote">
+    Prototype: <code>~/fun3/cutile-triton/</code> — <code>TritonEmitter.jl</code> (SCI→TTIR, ~820 lines), <code>TritonRun.jl</code> (wheel compile + CUDA.jl launch), <code>test_correct.jl</code> (10 tests), <code>bench.jl</code> / <code>sweep_matmul.jl</code>, venv with triton 3.7.1; plus the original single-kernel PoC (<code>vadd_emit.jl</code>, <code>step1_irsource.py</code>, <code>vadd_launch.jl</code>).
+    Sources analyzed: cuTile.jl v0.3.2 (registry) + main checkout, IRStructurizer v0.6.3, MLIRKernels, Reactant v0.2.262, cpu-poc.
+    Triton entry point: <code>python/triton/compiler/compiler.py</code> (<code>IRSource</code>); launch contract: <code>third_party/nvidia/backend/driver.py</code>.
+  </p>
+</main>

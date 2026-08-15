@@ -1,0 +1,1 @@
+{"name": "matmul_tut", "num_warps": 8, "warp_size": 32, "shared": 147480, "global_scratch_size": 384}

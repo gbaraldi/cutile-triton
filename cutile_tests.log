@@ -1,0 +1,583 @@
+atomic_cas tile-indexed success: Error During Test at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:266
+  Got exception outside of a @test
+  atomic_cas: masked CAS has no tt.atomic_cas equivalent yet
+  Stacktrace:
+    [1] error(s::String)
+      @ Base ./error.jl:44
+    [2] walk_call!(cg::Main.TritonEmitter.CG, callee::Any, args::Vector{Any}, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1028
+    [3] walk_expr!(cg::Main.TritonEmitter.CG, e::Expr, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:647
+    [4] walk_stmt!(cg::Main.TritonEmitter.CG, stmt::Any, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:620
+    [5] _walk_stmts!(cg::Main.TritonEmitter.CG, stmts::Vector{Pair{Int64, @NamedTuple{stmt, type, flag::UInt32}}}, i0::Int64, at_top::Bool)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:558
+    [6] #walk_block!#2
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:546 [inlined]
+    [7] walk_block!
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:545 [inlined]
+    [8] emit_ttir(f::Any, argtypes::Any; name::String, use_tma::Bool, hints::Nothing)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1677
+    [9] emit_ttir
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:1617 [inlined]
+   [10] triton_kernel_candidates(f::Any, argtypes::Any; name::String, use_tma::Bool)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:69
+   [11] triton_kernel_candidates
+      @ ~/fun3/cutile-triton/TritonRun.jl:67 [inlined]
+   [12] get_kernel(f::Any, tt::Any)
+      @ Main.TritonShim ~/fun3/cutile-triton/triton_shim_module.jl:31
+   [13] #cufunction#405
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:102 [inlined]
+   [14] cufunction
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:101 [inlined]
+   [15] kernel_compile(::cuTile.TileBackend, f::Main.Test_atomics_jl.var"#atomic_cas_tile_kernel#atomic_cas_tile_kernel##0", tt::Type{Tuple{cuTile.TileArray{Int64, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}, cuTile.TileArray{Int64, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}}})
+      @ cuTile ~/.julia/packages/cuTile/Wt2pj/src/launch.jl:77
+   [16] top-level scope
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:267
+   [17] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [18] macro expansion
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:278 [inlined]
+   [19] macro expansion
+      @ ~/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+   [20] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [21] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:59 [inlined]
+   [22] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [23] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:48 [inlined]
+   [24] macro expansion
+      @ ./timing.jl:461 [inlined]
+   [25] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:46 [inlined]
+   [26] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [27] top-level scope
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:43
+   [28] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [29] exec_options(opts::Base.JLOptions)
+      @ Base ./client.jl:317
+   [30] _start()
+      @ Base ./client.jl:550
+atomic_cas tile-indexed failure: Error During Test at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:284
+  Got exception outside of a @test
+  atomic_cas: masked CAS has no tt.atomic_cas equivalent yet
+  Stacktrace:
+    [1] error(s::String)
+      @ Base ./error.jl:44
+    [2] walk_call!(cg::Main.TritonEmitter.CG, callee::Any, args::Vector{Any}, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1028
+    [3] walk_expr!(cg::Main.TritonEmitter.CG, e::Expr, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:647
+    [4] walk_stmt!(cg::Main.TritonEmitter.CG, stmt::Any, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:620
+    [5] _walk_stmts!(cg::Main.TritonEmitter.CG, stmts::Vector{Pair{Int64, @NamedTuple{stmt, type, flag::UInt32}}}, i0::Int64, at_top::Bool)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:558
+    [6] #walk_block!#2
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:546 [inlined]
+    [7] walk_block!
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:545 [inlined]
+    [8] emit_ttir(f::Any, argtypes::Any; name::String, use_tma::Bool, hints::Nothing)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1677
+    [9] emit_ttir
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:1617 [inlined]
+   [10] triton_kernel_candidates(f::Any, argtypes::Any; name::String, use_tma::Bool)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:69
+   [11] triton_kernel_candidates
+      @ ~/fun3/cutile-triton/TritonRun.jl:67 [inlined]
+   [12] get_kernel(f::Any, tt::Any)
+      @ Main.TritonShim ~/fun3/cutile-triton/triton_shim_module.jl:31
+   [13] #cufunction#405
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:102 [inlined]
+   [14] cufunction
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:101 [inlined]
+   [15] kernel_compile(::cuTile.TileBackend, f::Main.Test_atomics_jl.var"#atomic_cas_fail_kernel#atomic_cas_fail_kernel##0", tt::Type{Tuple{cuTile.TileArray{Int64, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}, cuTile.TileArray{Int64, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}}})
+      @ cuTile ~/.julia/packages/cuTile/Wt2pj/src/launch.jl:77
+   [16] top-level scope
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:285
+   [17] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [18] macro expansion
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/atomics.jl:296 [inlined]
+   [19] macro expansion
+      @ ~/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+   [20] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [21] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:59 [inlined]
+   [22] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [23] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:48 [inlined]
+   [24] macro expansion
+      @ ./timing.jl:461 [inlined]
+   [25] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:46 [inlined]
+   [26] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [27] top-level scope
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:43
+   [28] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [29] exec_options(opts::Base.JLOptions)
+      @ Base ./client.jl:317
+   [30] _start()
+      @ Base ./client.jl:550
+>>> atomics.jl: pass=22 fail=0 error=2 (46.8s)
+>>> broadcast.jl: pass=123 fail=0 error=0 (24.6s)
+for loop with decrement (StepRange): Error During Test at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/control_flow.jl:177
+  Got exception outside of a @test
+  walk_stmt!: LoopOp not yet supported by the Triton emitter
+  Stacktrace:
+    [1] error(s::String)
+      @ Base ./error.jl:44
+    [2] walk_stmt!(cg::Main.TritonEmitter.CG, stmt::Any, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:634
+    [3] _walk_stmts!(cg::Main.TritonEmitter.CG, stmts::Vector{Pair{Int64, @NamedTuple{stmt, type, flag::UInt32}}}, i0::Int64, at_top::Bool)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:558
+    [4] walk_block!(cg::Main.TritonEmitter.CG, blk::IRStructurizer.Block; at_top::Bool)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:546
+    [5] walk_block!(cg::Main.TritonEmitter.CG, blk::IRStructurizer.Block)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:545
+    [6] region_from_block!(cg::Main.TritonEmitter.CG, blk::IRStructurizer.Block, res_types::Vector{MLIR.IR.Type}; blockarg_types::Vector{MLIR.IR.Type}, blockarg_ids::Vector{Int64}, keep::Vector{Bool})
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1415
+    [7] emit_if!(cg::Main.TritonEmitter.CG, op::IRStructurizer.IfOp, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1445
+    [8] walk_stmt!(cg::Main.TritonEmitter.CG, stmt::Any, typ::Any)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:621
+    [9] _walk_stmts!(cg::Main.TritonEmitter.CG, stmts::Vector{Pair{Int64, @NamedTuple{stmt, type, flag::UInt32}}}, i0::Int64, at_top::Bool)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:558
+   [10] #walk_block!#2
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:546 [inlined]
+   [11] walk_block!
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:545 [inlined]
+   [12] emit_ttir(f::Any, argtypes::Any; name::String, use_tma::Bool, hints::Nothing)
+      @ Main.TritonEmitter ~/fun3/cutile-triton/TritonEmitter.jl:1677
+   [13] emit_ttir
+      @ ~/fun3/cutile-triton/TritonEmitter.jl:1617 [inlined]
+   [14] triton_kernel_candidates(f::Any, argtypes::Any; name::String, use_tma::Bool)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:69
+   [15] triton_kernel_candidates
+      @ ~/fun3/cutile-triton/TritonRun.jl:67 [inlined]
+   [16] get_kernel(f::Any, tt::Any)
+      @ Main.TritonShim ~/fun3/cutile-triton/triton_shim_module.jl:31
+   [17] #cufunction#405
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:102 [inlined]
+   [18] cufunction
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:101 [inlined]
+   [19] kernel_compile(::cuTile.TileBackend, f::Main.Test_control_flow_jl.var"#for_loop_decr_kernel#for_loop_decr_kernel##0", tt::Type{Tuple{cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}, Int32}})
+      @ cuTile ~/.julia/packages/cuTile/Wt2pj/src/launch.jl:77
+   [20] top-level scope
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/control_flow.jl:178
+   [21] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [22] macro expansion
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/control_flow.jl:193 [inlined]
+   [23] macro expansion
+      @ ~/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+   [24] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [25] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:59 [inlined]
+   [26] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [27] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:48 [inlined]
+   [28] macro expansion
+      @ ./timing.jl:461 [inlined]
+   [29] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:46 [inlined]
+   [30] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [31] top-level scope
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:43
+   [32] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [33] exec_options(opts::Base.JLOptions)
+      @ Base ./client.jl:317
+   [34] _start()
+      @ Base ./client.jl:550
+>>> control_flow.jl: pass=12 fail=0 error=1 (5.9s)
+reflection macros: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/core.jl:175
+  Expression: Array(c) ≈ Array(a) + Array(b)
+   Evaluated: Float32[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  …  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] ≈ Float32[0.73093146, 0.7932583, 1.3730267, 1.688363, 1.2842569, 1.7358115, 1.4843736, 1.0977331, 0.3836729, 1.7467362  …  1.0686996, 0.7442008, 0.43521112, 1.7521766, 1.3409935, 1.3908119, 1.3906535, 1.7177414, 1.0694888, 1.0153618]
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:149
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:175 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:680 [inlined]
+reflection macros: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/core.jl:237
+  Expression: Array(c2) ≈ Array(a) + Array(b)
+   Evaluated: Float32[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  …  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] ≈ Float32[0.73093146, 0.7932583, 1.3730267, 1.688363, 1.2842569, 1.7358115, 1.4843736, 1.0977331, 0.3836729, 1.7467362  …  1.0686996, 0.7442008, 0.43521112, 1.7521766, 1.3409935, 1.3908119, 1.3906535, 1.7177414, 1.0694888, 1.0153618]
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:149
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:237 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:680 [inlined]
+reflection macros: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/core.jl:260
+  Expression: Array(c3) ≈ Array(a) + Array(b)
+   Evaluated: Float32[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  …  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] ≈ Float32[0.73093146, 0.7932583, 1.3730267, 1.688363, 1.2842569, 1.7358115, 1.4843736, 1.0977331, 0.3836729, 1.7467362  …  1.0686996, 0.7442008, 0.43521112, 1.7521766, 1.3409935, 1.3908119, 1.3906535, 1.7177414, 1.0694888, 1.0153618]
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:149
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/core.jl:260 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:680 [inlined]
+>>> core.jl: pass=36 fail=3 error=0 (15.9s)
+>>> gather_scatter.jl: pass=16 fail=0 error=0 (2.8s)
+launch with num_ctas: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:25
+  Expression: #= /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:25 =# @cuda backend = cuTile blocks = 64 num_ctas = 2 vadd_kernel_num_ctas(a, b, c)
+    Expected: num_cta_in_cga
+  No exception thrown
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:5
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:6 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [5] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:25 [inlined]
+launch with both hints: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:70
+  Expression: #= /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:70 =# @cuda backend = cuTile blocks = 64 num_ctas = 4 occupancy = 8 vadd_kernel_both_hints(a, b, c)
+    Expected: num_cta_in_cga
+  No exception thrown
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:5
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:51 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [5] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:70 [inlined]
+launch with num_worker_warps: Test Failed at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:98
+  Expression: #= /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:98 =# @cuda backend = cuTile blocks = 64 num_worker_warps = 3 vadd_kernel_worker_warps(a, b, c)
+    Expected: num_worker_warps must be either 4 or 8
+  No exception thrown
+
+Stacktrace:
+ [1] top-level scope
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:5
+ [2] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [3] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:75 [inlined]
+ [4] macro expansion
+   @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+ [5] macro expansion
+   @ ~/.julia/packages/cuTile/Wt2pj/test/device/hints.jl:98 [inlined]
+>>> hints.jl: pass=10 fail=3 error=0 (3.6s)
+>>> integration.jl: pass=4 fail=0 error=0 (3.5s)
+>>> kernel_state.jl: pass=3 fail=0 error=0 (0.9s)
+>>> math.jl: pass=8 fail=0 error=0 (2.9s)
+>>> print.jl: pass=5 fail=0 error=0 (0.0s)
+>>> random.jl: pass=480 fail=0 error=0 (29.3s)
+>>> reductions.jl: pass=927 fail=0 error=0 (41.0s)
+>>> slice.jl: pass=7 fail=0 error=0 (2.5s)
+julia: /__w/triton/triton/llvm-project/mlir/lib/IR/Types.cpp:123: unsigned int mlir::Type::getIntOrFloatBitWidth() const: Assertion `isIntOrFloat() && "only integers and floats have a bitwidth"' failed.
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @_full_runtime_kernel_full_runtime_kernel__0(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: i32, %arg2: i32, %arg3: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg4: i32 {tt.divisibility = 16 : i32}, %arg5: i32, %arg6: i32) {
+    %cst = arith.constant dense<0> : tensor<1xi32, #blocked>
+    %c16_i32 = arith.constant 16 : i32
+    %0 = tt.splat %arg1 : i32 -> tensor<1xi32, #blocked>
+    %1 = arith.cmpi sgt, %0, %cst : tensor<1xi32, #blocked>
+    %2 = tt.splat %arg0 : !tt.ptr<f32> -> tensor<1x!tt.ptr<f32>, #blocked>
+    %3 = tt.load %2, %1 : tensor<1x!tt.ptr<f32>, #blocked>
+    %4 = tt.get_program_id x : i32
+    %5 = tt.splat %3 : tensor<1xf32, #blocked> -> tensor<16xf32, #blocked>
+    %6 = arith.muli %4, %c16_i32 : i32
+    %7 = tt.make_range {end = 16 : i32, start = 0 : i32} : tensor<16xi32, #blocked>
+    %8 = tt.splat %6 : i32 -> tensor<16xi32, #blocked>
+    %9 = arith.addi %8, %7 : tensor<16xi32, #blocked>
+    %10 = tt.splat %arg4 : i32 -> tensor<16xi32, #blocked>
+    %11 = arith.cmpi slt, %9, %10 : tensor<16xi32, #blocked>
+    %12 = tt.splat %arg3 : !tt.ptr<f32> -> tensor<16x!tt.ptr<f32>, #blocked>
+    %13 = tt.addptr %12, %9 : tensor<16x!tt.ptr<f32>, #blocked>, tensor<16xi32, #blocked>
+    tt.store %13, %5, %11 : tensor<16x!tt.ptr<f32>, #blocked>
+    tt.return
+  }
+}
+
+{-#
+  external_resources: {
+    mlir_reproducer: {
+      pipeline: "builtin.module(tritongpu-combine-tensor-select-and-if, tritongpu-allocate-warp-groups, convert-scf-to-cf{allow-pattern-rollback=true}, gluon-inline, allocate-shared-memory-nv{compute-capability=90 ptx-version=87}, triton-tensor-memory-allocation, triton-nvidia-check-matmul-two-cta, tritongpu-global-scratch-memory-allocation, triton-nvidia-gpu-proxy-fence-insertion{compute-capability=90}, convert-triton-gpu-to-llvm{compute-capability=90 ptx-version=87}, canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}, cse, convert-nv-gpu-to-llvm, convert-warp-specialize-to-llvm, canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=normal test-convergence=false top-down=true}, cse, symbol-dce, convert-nvvm-to-llvm, enable-line-info)",
+      disable_threading: true,
+      verify_each: true
+    }
+  }
+#-}
+/tmp/jl_RmfA2W/_full_runtime_kernel_full_runtime_kernel__0.ttir:1:1: error: Failures have been detected while processing an MLIR pass pipeline
+module {
+^
+/tmp/jl_RmfA2W/_full_runtime_kernel_full_runtime_kernel__0.ttir:1:1: note: Pipeline failed while executing [`ConvertTritonGPUToLLVM` on 'builtin.module' operation]: reproducer generated at `std::errs, please share the reproducer above with Triton project.`
+full with runtime value: Error During Test at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/test/device/tile.jl:156
+  Got exception outside of a @test
+  triton compile failed for _full_runtime_kernel_full_runtime_kernel__0:
+  Python: RuntimeError: PassManager::run failed
+  Stacktrace:
+    [1] error(s::String)
+      @ Base ./error.jl:44
+    [2] _compile_py(ttir::String, name::String, num_warps::Int64, num_stages::Int64)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:39
+    [3] compile_kernel(ttir::String, argspec::Vector{Main.TritonEmitter.ArgSpec}; name::String, num_warps::Int64, num_stages::Int64)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:100
+    [4] compile_kernel
+      @ ~/fun3/cutile-triton/TritonRun.jl:95 [inlined]
+    [5] triton_kernel_candidates(f::Any, argtypes::Any; name::String, use_tma::Bool)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:71
+    [6] triton_kernel_candidates
+      @ ~/fun3/cutile-triton/TritonRun.jl:67 [inlined]
+    [7] get_kernel(f::Any, tt::Any)
+      @ Main.TritonShim ~/fun3/cutile-triton/triton_shim_module.jl:31
+    [8] #cufunction#405
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:102 [inlined]
+    [9] cufunction
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:101 [inlined]
+   [10] kernel_compile(::cuTile.TileBackend, f::Main.Test_tile_jl.var"#full_runtime_kernel#full_runtime_kernel##0", tt::Type{Tuple{cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (0,)}()}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}}})
+      @ cuTile ~/.julia/packages/cuTile/Wt2pj/src/launch.jl:77
+   [11] top-level scope
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/tile.jl:157
+   [12] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [13] macro expansion
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/tile.jl:170 [inlined]
+   [14] macro expansion
+      @ ~/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+   [15] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [16] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:59 [inlined]
+   [17] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [18] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:48 [inlined]
+   [19] macro expansion
+      @ ./timing.jl:461 [inlined]
+   [20] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:46 [inlined]
+   [21] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [22] top-level scope
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:43
+   [23] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [24] exec_options(opts::Base.JLOptions)
+      @ Base ./client.jl:317
+   [25] _start()
+      @ Base ./client.jl:550
+  
+  caused by: Python: RuntimeError: PassManager::run failed
+  Python stacktrace:
+   [1] make_llir
+     @ triton.backends.nvidia.compiler ~/fun3/cutile-triton/.CondaPkg/.pixi/envs/default/lib/python3.14/site-packages/triton/backends/nvidia/compiler.py:383
+   [2] <lambda>
+     @ triton.backends.nvidia.compiler ~/fun3/cutile-triton/.CondaPkg/.pixi/envs/default/lib/python3.14/site-packages/triton/backends/nvidia/compiler.py:552
+   [3] compile
+     @ triton.compiler.compiler ~/fun3/cutile-triton/.CondaPkg/.pixi/envs/default/lib/python3.14/site-packages/triton/compiler/compiler.py:327
+  Stacktrace:
+    [1] pythrow()
+      @ PythonCall.Core ~/.julia/packages/PythonCall/5WGSP/src/Core/err.jl:77
+    [2] errcheck
+      @ ~/.julia/packages/PythonCall/5WGSP/src/Core/err.jl:10 [inlined]
+    [3] pycallargs
+      @ ~/.julia/packages/PythonCall/5WGSP/src/Core/builtins.jl:195 [inlined]
+    [4] pycall(f::PythonCall.Py, args::String; kwargs::@Kwargs{target::PythonCall.Py, options::PythonCall.Py})
+      @ PythonCall.Core ~/.julia/packages/PythonCall/5WGSP/src/Core/builtins.jl:207
+    [5] pycall
+      @ ~/.julia/packages/PythonCall/5WGSP/src/Core/builtins.jl:203 [inlined]
+    [6] Py
+      @ ~/.julia/packages/PythonCall/5WGSP/src/Core/Py.jl:357 [inlined]
+    [7] _compile_py(ttir::String, name::String, num_warps::Int64, num_stages::Int64)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:36
+    [8] compile_kernel(ttir::String, argspec::Vector{Main.TritonEmitter.ArgSpec}; name::String, num_warps::Int64, num_stages::Int64)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:100
+    [9] compile_kernel
+      @ ~/fun3/cutile-triton/TritonRun.jl:95 [inlined]
+   [10] triton_kernel_candidates(f::Any, argtypes::Any; name::String, use_tma::Bool)
+      @ Main.TritonRun ~/fun3/cutile-triton/TritonRun.jl:71
+   [11] triton_kernel_candidates
+      @ ~/fun3/cutile-triton/TritonRun.jl:67 [inlined]
+   [12] get_kernel(f::Any, tt::Any)
+      @ Main.TritonShim ~/fun3/cutile-triton/triton_shim_module.jl:31
+   [13] #cufunction#405
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:102 [inlined]
+   [14] cufunction
+      @ ~/fun3/cutile-triton/triton_shim_module.jl:101 [inlined]
+   [15] kernel_compile(::cuTile.TileBackend, f::Main.Test_tile_jl.var"#full_runtime_kernel#full_runtime_kernel##0", tt::Type{Tuple{cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (0,)}()}, cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (0,), (16,)}()}}})
+      @ cuTile ~/.julia/packages/cuTile/Wt2pj/src/launch.jl:77
+   [16] top-level scope
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/tile.jl:157
+   [17] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [18] macro expansion
+      @ ~/.julia/packages/cuTile/Wt2pj/test/device/tile.jl:170 [inlined]
+   [19] macro expansion
+      @ ~/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+   [20] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [21] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:59 [inlined]
+   [22] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [23] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:48 [inlined]
+   [24] macro expansion
+      @ ./timing.jl:461 [inlined]
+   [25] macro expansion
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:46 [inlined]
+   [26] macro expansion
+      @ ~/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/share/julia/stdlib/v1.12/Test/src/Test.jl:1777 [inlined]
+   [27] top-level scope
+      @ ~/fun3/cutile-triton/run_cutile_tests.jl:43
+   [28] include(mod::Module, _path::String)
+      @ Base ./Base.jl:306
+   [29] exec_options(opts::Base.JLOptions)
+      @ Base ./client.jl:317
+   [30] _start()
+      @ Base ./client.jl:550
+>>> tile.jl: pass=148 fail=0 error=1 (34.9s)
+>>> types.jl: pass=4 fail=0 error=0 (1.9s)
+>>> views.jl: pass=5 fail=0 error=0 (2.0s)
+Test Summary:                                  | Pass  Fail  Error  Total     Time
+cuTile device suite via Triton                 | 1810     6      4   1820  3m38.5s
+  atomics.jl                                   |   22            2     24    46.8s
+    atomic_add Int                             |    1                   1    32.8s
+    atomic_add Float32                         |    1                   1     0.5s
+    atomic_xchg                                |    1                   1     0.5s
+    atomic_cas success                         |    1                   1     0.3s
+    spinlock with token ordering               |    1                   1     2.0s
+    explicit memory ordering kwargs            |    1                   1     0.2s
+    atomic_add with explicit kwargs            |    1                   1     0.2s
+    atomic_add tile-indexed 1D                 |    1                   1     2.9s
+    atomic_add tile-indexed returns old values |    2                   2     0.3s
+    atomic_add tile-indexed Float32            |    1                   1     0.9s
+    atomic_add tile-indexed with tile values   |    1                   1     0.3s
+    atomic_xchg tile-indexed                   |    1                   1     0.2s
+    atomic_cas tile-indexed success            |                 1      1     0.8s
+    atomic_cas tile-indexed failure            |                 1      1     0.2s
+    atomic_add tile-indexed out-of-bounds      |    1                   1     0.2s
+    atomic_add tile-indexed 3D                 |    1                   1     1.3s
+    atomic_max Int                             |    1                   1     0.2s
+    atomic_min Int                             |    1                   1     0.6s
+    atomic_or Int                              |    1                   1     0.3s
+    atomic_and Int                             |    1                   1     0.3s
+    atomic_xor Int                             |    1                   1     0.3s
+    1D gather - simple                         |    1                   1     0.7s
+    1D scatter - simple                        |    1                   1     0.2s
+  broadcast.jl                                 |  123                 123    24.6s
+  control_flow.jl                              |   12            1     13     5.9s
+    early returns                              |    5                   5     1.3s
+    scalar indexing as loop bound              |    3                   3     1.9s
+    for loop accumulation                      |    1                   1     0.5s
+    for loop with constant bound               |    1                   1     0.3s
+    for loop with step (StepRange)             |    1                   1     0.7s
+    for loop with decrement (StepRange)        |                 1      1     0.8s
+    for loop store each iteration              |    1                   1     0.3s
+  core.jl                                      |   36     3            39    15.9s
+    compilation cache                          |    2                   2     0.2s
+    invalidations                              |    8                   8     1.8s
+    reflection macros                          |    8     3            11     0.9s
+    assert                                     |    4                   4     8.0s
+    Constant parameters                        |    4                   4     1.4s
+    TileArray auto-conversion                  |    1                   1     0.2s
+    global constant arithmetic                 |    1                   1     0.3s
+    kernel name with !                         |                        0     0.3s
+    inlined Unicode operator in debug info     |    1                   1     0.3s
+    non-Constant ghost type argument (nothing) |    1                   1     0.2s
+    non-Constant ghost type argument (Val)     |    1                   1     0.2s
+    @nospecialize'd kernel function (identity) |                        0     0.2s
+    struct destructuring                       |    5                   5     1.4s
+  gather_scatter.jl                            |   16                  16     2.8s
+  hints.jl                                     |   10     3            13     3.6s
+    Entry Hints                                |    2     3             5     1.4s
+      launch with num_ctas                     |          1             1     0.6s
+      launch with occupancy                    |    1                   1     0.2s
+      launch with both hints                   |          1             1     0.2s
+      launch with num_worker_warps             |    1     1             2     0.3s
+    Load / Store Optimization Hints            |    8                   8     2.0s
+  integration.jl                               |    4                   4     3.5s
+  kernel_state.jl                              |    3                   3     0.9s
+  math.jl                                      |    8                   8     2.9s
+  print.jl                                     |    5                   5     0.0s
+  random.jl                                    |  480                 480    29.3s
+  reductions.jl                                |  927                 927    41.0s
+  slice.jl                                     |    7                   7     2.5s
+  tile.jl                                      |  148            1    149    34.9s
+    1D vector add                              |    1                   1     0.2s
+    1D vector sub                              |    1                   1     0.2s
+    1D vector mul                              |    1                   1     0.3s
+    1D vector div                              |    1                   1     0.3s
+    2D matrix add                              |    1                   1     0.2s
+    4D tensor add                              |    1                   1     1.3s
+    1D sqrt                                    |    1                   1     0.3s
+    1D abs                                     |    1                   1     0.3s
+    1D cos                                     |    1                   1     0.3s
+    1D sin                                     |    1                   1     0.4s
+    1D exp                                     |    1                   1     0.5s
+    1D log                                     |    1                   1     0.3s
+    1D ceil                                    |    1                   1     0.5s
+    1D floor                                   |    1                   1     0.5s
+    full with runtime value                    |                 1      1     0.5s
+    rank mismatch load/store                   |    2                   2     0.7s
+    scalar store                               |    1                   1     0.2s
+    transpose                                  |    1                   1     0.7s
+    reshape                                    |   33                  33     1.6s
+    reshape column-major semantics             |    7                   7     3.0s
+    repeat                                     |    4                   4     1.6s
+    permutedims                                |    9                   9     0.6s
+    strided                                    |    3                   3     4.3s
+    extract                                    |   15                  15     2.1s
+    scalar tile getindex                       |    1                   1     0.2s
+    scalar tile setindex                       |    1                   1     0.3s
+    cat                                        |   40                  40     0.8s
+    matmul                                     |   11                  11     9.2s
+    reinterpret matches Base.reinterpret       |    6                   6     2.7s
+  types.jl                                     |    4                   4     1.9s
+  views.jl                                     |    5                   5     2.0s
+RNG of the outermost testset: Random.Xoshiro(0xa9b710317bc2b56d, 0xc2f7440a0772877b, 0x95d143b6784c62fa, 0x1540e97d6ef2f0aa, 0x7479914df43ccf66)
+
+================================================================
+file                        pass  fail  error    time
+atomics.jl                    22     0      2     47s
+broadcast.jl                 123     0      0     25s
+control_flow.jl               12     0      1      6s
+core.jl                       36     3      0     16s
+gather_scatter.jl             16     0      0      3s
+hints.jl                      10     3      0      4s
+integration.jl                 4     0      0      3s
+kernel_state.jl                3     0      0      1s
+math.jl                        8     0      0      3s
+print.jl                       5     0      0      0s
+random.jl                    480     0      0     29s
+reductions.jl                927     0      0     41s
+slice.jl                       7     0      0      3s
+tile.jl                      148     0      1     35s
+types.jl                       4     0      0      2s
+views.jl                       5     0      0      2s
+TOTAL                       1810     6      4

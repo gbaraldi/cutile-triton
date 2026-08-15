@@ -1,0 +1,1 @@
+{"name": "vadd", "num_warps": 4, "warp_size": 32, "shared": 0, "global_scratch_size": 0, "global_scratch_align": 1, "launch_cooperative_grid": false}

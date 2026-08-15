@@ -1,0 +1,1 @@
+{"name": "matmul", "num_warps": 8, "warp_size": 32, "shared": 98352, "global_scratch_size": 384, "global_scratch_align": 128, "launch_cooperative_grid": false}

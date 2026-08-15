@@ -1,0 +1,61 @@
+RESULT	batchmatmul	FAILED			walk_call!: unhandled intrinsic cldi (args=Any[:(%9), 64, :($(QuoteNode(cuTile.Signedness.Signed)))])
+RESULT	fft	cuTile	0.0548	0.0562	55 µs
+RESULT	fmha	FAILED			walk_call!: unhandled intrinsic cldi (args=Any[:(%4), 16, :($(QuoteNode(cuTile.Signedness.Signed)))])
+RESULT	layernorm	FAILED			tile_type: unsupported cuTile.TokenType
+RESULT	matmul	FAILED			walk_call!: unhandled intrinsic cldi (args=Any[:(%5), 64, :($(QuoteNode(cuTile.Signedness.Signed)))])
+RESULT	moe	FAILED			walk_call!: unhandled intrinsic cldi (args=Any[:(%3), 128, :($(QuoteNode(cuTile.Signedness.Signed)))])
+
+[3072667] signal 11 (1): Segmentation fault
+in expression starting at /home/gbaraldi/fun3/cutile-triton/bench_examples.jl:22
+_ZNK4mlir10ShapedType14getElementTypeEv at /home/gbaraldi/.julia/artifacts/18b9cd6b0b3df05a18e9e488b5b4b5f1afe57d90/lib/libMLIR-C.so (unknown line)
+mlirShapedTypeGetElementType at /home/gbaraldi/.julia/artifacts/18b9cd6b0b3df05a18e9e488b5b4b5f1afe57d90/lib/libMLIR-C.so (unknown line)
+mlirShapedTypeGetElementType at /home/gbaraldi/.julia/packages/MLIR/HCwZK/src/API/18/libMLIR_h.jl:4694 [inlined]
+#mlirShapedTypeGetElementType#649 at /home/gbaraldi/.julia/packages/MLIR/HCwZK/src/API/API.jl:46
+mlirShapedTypeGetElementType at /home/gbaraldi/.julia/packages/MLIR/HCwZK/src/API/API.jl:34 [inlined]
+walk_call! at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:772
+walk_expr! at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:590
+walk_stmt! at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:563
+_walk_stmts! at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:501
+#walk_block!#2 at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:489 [inlined]
+walk_block! at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:488 [inlined]
+#emit_ttir#25 at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:1547
+emit_ttir at /home/gbaraldi/fun3/cutile-triton/TritonEmitter.jl:1495 [inlined]
+#triton_kernel#1 at /home/gbaraldi/fun3/cutile-triton/TritonRun.jl:38
+triton_kernel at /home/gbaraldi/fun3/cutile-triton/TritonRun.jl:35 [inlined]
+get_kernel at /home/gbaraldi/fun3/cutile-triton/triton_shim_module.jl:27
+#cufunction#405 at /home/gbaraldi/fun3/cutile-triton/triton_shim_module.jl:81 [inlined]
+cufunction at /home/gbaraldi/fun3/cutile-triton/triton_shim_module.jl:80 [inlined]
+#kernel_compile#386 at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/launch.jl:77 [inlined]
+kernel_compile at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/launch.jl:77 [inlined]
+macro expansion at /home/gbaraldi/.julia/packages/CUDACore/NlVPI/src/compiler/execution.jl:183 [inlined]
+run_chunked at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/examples/softmax.jl:140
+macro expansion at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/examples/softmax.jl:146 [inlined]
+macro expansion at /home/gbaraldi/.julia/packages/CUDACore/NlVPI/src/utilities.jl:35 [inlined]
+#run#2 at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/examples/softmax.jl:144
+run at /home/gbaraldi/.julia/packages/cuTile/Wt2pj/examples/softmax.jl:130
+unknown function (ip: 0x7eed92b6d249) at (unknown file)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+jl_f_invoke_in_world at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/builtins.c:900
+#invokelatest_gr#232 at ./reflection.jl:1297 [inlined]
+invokelatest_gr at ./reflection.jl:1289
+unknown function (ip: 0x7eed92b6a554) at (unknown file)
+top-level scope at /home/gbaraldi/fun3/cutile-triton/bench_examples.jl:31
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1024
+jl_toplevel_eval_flex at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:975
+ijl_toplevel_eval at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1047
+ijl_toplevel_eval_in at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/toplevel.c:1092
+eval at ./boot.jl:489
+include_string at ./loading.jl:2874
+_include at ./loading.jl:2934
+include at ./Base.jl:306
+exec_options at ./client.jl:317
+_start at ./client.jl:550
+jfptr__start_63319.1 at /home/gbaraldi/.julia/juliaup/julia-1.12.6+0.x64.linux.gnu/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/julia.h:2391 [inlined]
+true_main at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:971
+jl_repl_entrypoint at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/src/jlapi.c:1139
+main at /cache/build/builder-amdci5-4/julialang/julia-release-1-dot-12/cli/loader_exe.c:58
+unknown function (ip: 0x7eedda42a1c9) at /lib/x86_64-linux-gnu/libc.so.6
+__libc_start_main at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+unknown function (ip: 0x4010b8) at /workspace/srcdir/glibc-2.17/csu/../sysdeps/x86_64/start.S
+Allocations: 107670551 (Pool: 107669548; Big: 1003); GC: 25

@@ -1,0 +1,12 @@
+RESULT	batchmatmul	cuTile	0.2971	0.2998	57.8 TFLOPS
+RESULT	fft	cuTile	0.0452	0.0463	45 µs
+RESULT	fmha	cuTile	0.118	0.157	291.2 TFLOPS
+RESULT	layernorm	cuTile Bwd	0.5901	0.5997	569 GB/s
+RESULT	layernorm	cuTile Fwd	0.0692	0.0709	3882 GB/s
+RESULT	matmul	cuTile	2.0593	2.2883	66.7 TFLOPS
+RESULT	moe	cuTile	0.4952	0.543	52.0 TFLOPS
+RESULT	softmax	cuTile TMA	0.0477	0.0493	2813 GB/s
+RESULT	softmax	cuTile Chunked	0.0641	0.0654	4190 GB/s
+RESULT	transpose	cuTile	0.1668	0.1688	3218 GB/s
+RESULT	vadd	cuTile	0.4535	0.4557	3551 GB/s
+BENCH DONE (triton)

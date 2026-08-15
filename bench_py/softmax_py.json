@@ -1,0 +1,1 @@
+{"name": "softmax", "num_warps": 4, "warp_size": 32, "shared": 16}

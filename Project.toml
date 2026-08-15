@@ -1,0 +1,10 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CondaPkg = "992eb4ea-22a4-4c89-a5bb-47a3300528ab"
+FFTW = "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"
+IRStructurizer = "93e32bba-5bb8-402b-805d-ffb066edee93"
+MLIR = "bfde9dd4-8f40-4a1e-be09-1475335e1c92"
+MLIR_jll = "a70bccb4-a5c0-5e2e-a329-e731972457e8"
+NVTX = "5da4648a-3479-48b8-97b9-01cb529c0a1f"
+PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"

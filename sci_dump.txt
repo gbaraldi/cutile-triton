@@ -1,0 +1,206 @@
+======================================================================
+== vadd
+======================================================================
+StructuredIRCode(
+│ %29 = cuTile.MakeTokenNode()::cuTile.TokenType()
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:288 within `bid`
+│ %1  = cuTile.Intrinsics.get_tile_block_id(0)::cuTile.IntTile{Tuple{}, Int32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %3  = Base.getfield(_2, :ptr)::Ptr{Float32}
+│ %4  = Base.getfield(_2, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ %5  = Base.getfield(_2, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:386 within `#load#207`
+│ %6  = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}, %3, %4, %5)::cuTile.TensorView{Float32, 1}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ %7  = cuTile.Intrinsics.make_partition_view(%6, (1024,), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 1, Tuple{1024}}
+│ @ ntuple.jl:50 within `ntuple`
+│ %9  = Core.tuple(%1)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ %10 = cuTile.Intrinsics.load_partition_view(%7, cuTile.nothing, cuTile.nothing, %9, %29)::cuTile.FloatTile{Tuple{1024}, Float32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %11 = Base.getfield(_3, :ptr)::Ptr{Float32}
+│ %12 = Base.getfield(_3, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ %13 = Base.getfield(_3, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:386 within `#load#207`
+│ %14 = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}, %11, %12, %13)::cuTile.TensorView{Float32, 1}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ %15 = cuTile.Intrinsics.make_partition_view(%14, (1024,), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 1, Tuple{1024}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ %18 = cuTile.Intrinsics.load_partition_view(%15, cuTile.nothing, cuTile.nothing, %9, %29)::cuTile.FloatTile{Tuple{1024}, Float32}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/arithmetic.jl:72 within `+`
+│ %19 = cuTile.Intrinsics.addf(%10, %18)::cuTile.FloatTile{Tuple{1024}, Float32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %22 = Base.getfield(_4, :ptr)::Ptr{Float32}
+│ %23 = Base.getfield(_4, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ %24 = Base.getfield(_4, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:483 within `_store_reshaped`
+│ %25 = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}, %22, %23, %24)::cuTile.TensorView{Float32, 1}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:484 within `_store_reshaped`
+│ %26 = cuTile.Intrinsics.make_partition_view(%25, (1024,), cuTile.PaddingMode.Undetermined, nothing)::cuTile.PartitionView{Float32, 1, Tuple{1024}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:485 within `_store_reshaped`
+│ %27 = cuTile.Intrinsics.store_partition_view(%26, %19, nothing, nothing, %9, %29)::Nothing
+└ return nothing
+)
+-- argtypes:
+  arg 1: Core.Const(Main.vadd)
+  arg 2: cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}
+  arg 3: cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}
+  arg 4: cuTile.TileArray{Float32, 1, cuTile.ArraySpec{1, 128, true, (1,), (0,)}}
+  arg 5: Core.Const(1024)
+======================================================================
+== rowsum
+======================================================================
+StructuredIRCode(
+│ %24 = cuTile.MakeTokenNode()::cuTile.TokenType()
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:288 within `bid`
+│ %1  = cuTile.Intrinsics.get_tile_block_id(0)::cuTile.IntTile{Tuple{}, Int32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %3  = Base.getfield(_2, :ptr)::Ptr{Float32}
+│ %4  = Base.getfield(_2, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %5  = Base.getfield(_2, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:386 within `#load#207`
+│ %6  = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %3, %4, %5)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ %7  = cuTile.Intrinsics.make_partition_view(%6, (64, 128), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 2, Tuple{64, 128}}
+│ @ ntuple.jl:51 within `ntuple`
+│ %9  = Core.tuple(%1, 0)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ %10 = cuTile.Intrinsics.load_partition_view(%7, cuTile.nothing, cuTile.nothing, %9, %24)::cuTile.FloatTile{Tuple{64, 128}, Float32}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:1072 within `#mapreduce#243`
+│ %11 = Core.tuple(%10)::Tuple{cuTile.FloatTile{Tuple{64, 128}, Float32}}
+│ %12 = cuTile.Intrinsics.reduce(%11, 1, cuTile.+, (0.0f0,))::Tuple{cuTile.FloatTile{Tuple{64, 1}, Float32}}
+│ @ tuple.jl:33 within `getindex`
+│ %13 = boundscheck::cuTile.Tile{Bool, Tuple{}}
+│ %14 = Base.getfield(%12, 1, %13)::cuTile.FloatTile{Tuple{64, 1}, Float32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %17 = Base.getfield(_3, :ptr)::Ptr{Float32}
+│ %18 = Base.getfield(_3, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %19 = Base.getfield(_3, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:483 within `_store_reshaped`
+│ %20 = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %17, %18, %19)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:484 within `_store_reshaped`
+│ %21 = cuTile.Intrinsics.make_partition_view(%20, (64, 1), cuTile.PaddingMode.Undetermined, nothing)::cuTile.PartitionView{Float32, 2, Tuple{64, 1}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:485 within `_store_reshaped`
+│ %22 = cuTile.Intrinsics.store_partition_view(%21, %14, nothing, nothing, %9, %24)::Nothing
+└ return nothing
+)
+-- argtypes:
+  arg 1: Core.Const(Main.rowsum)
+  arg 2: cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}
+  arg 3: cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}
+  arg 4: Core.Const(64)
+  arg 5: Core.Const(128)
+======================================================================
+== matmul
+======================================================================
+StructuredIRCode(
+│ %93  = cuTile.MakeTokenNode()::cuTile.TokenType()
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:288 within `bid`
+│ %1   = cuTile.Intrinsics.get_tile_block_id(0)::cuTile.IntTile{Tuple{}, Int32}
+│ %3   = cuTile.Intrinsics.get_tile_block_id(1)::cuTile.IntTile{Tuple{}, Int32}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %5   = Base.getfield(_2, :ptr)::Ptr{Float32}
+│ %6   = Base.getfield(_2, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %7   = Base.getfield(_2, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:311 within `num_tiles`
+│ %8   = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %5, %6, %7)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:312 within `num_tiles`
+│ %9   = cuTile.Intrinsics.make_partition_view(%8, (128, 32), cuTile.PaddingMode.Undetermined, cuTile.nothing)::cuTile.PartitionView{Float32, 2, Tuple{128, 32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:313 within `num_tiles`
+│ %10  = cuTile.Intrinsics.get_index_space_shape(%9, 1)::cuTile.IntTile{Tuple{}, Int32}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:726 within `_full`
+│ %12  = cuTile.Intrinsics.constant((128, 128), 0.0f0, Float32)::cuTile.FloatTile{Tuple{128, 128}, Float32}
+│ @ int.jl:520 within `<=`
+│ %13  = cuTile.Intrinsics.cmpi(1, %10, cuTile.ComparisonPredicate.LessThanOrEqual, cuTile.Signedness.Signed)::cuTile.Tile{Bool, Tuple{}}
+│ @ range.jl:426 within `unitrange_last`
+│ %85  = if %13 -> Tuple{cuTile.IntTile{Tuple{}, Int32}}
+│ ├ then:
+│ │   yield %10
+│ ├ else:
+│ └   yield 0
+│ @ range.jl:415 within `UnitRange`
+│ %17  = getfield(%85, 1)::cuTile.IntTile{Tuple{}, Int32}
+│ @ int.jl:83 within `<`
+│ %20  = cuTile.Intrinsics.cmpi(%17, 1, cuTile.ComparisonPredicate.LessThan, cuTile.Signedness.Signed)::cuTile.Tile{Bool, Tuple{}}
+│ @ range.jl:917 within `iterate`
+│ %86  = if %20 -> Tuple{cuTile.Tile{Bool, Tuple{}}, cuTile.IntTile{Tuple{}, Int32}}
+│ ├ then:
+│ │   yield true, undef
+│ ├ else:
+│ └   yield false, 1
+│ @ /home/gbaraldi/fun3/cutile-triton/dump_sci.jl:29 within `matmul`
+│ %24  = getfield(%86, 1)::cuTile.Tile{Bool, Tuple{}}
+│ %26  = getfield(%86, 2)::cuTile.IntTile{Tuple{}, Int32}
+│ %27  = cuTile.Intrinsics.xori(%24, true)::cuTile.Tile{Bool, Tuple{}}
+│ %91  = if %27 -> Tuple{cuTile.FloatTile{Tuple{128, 128}, Float32}}
+│ ├ then:
+│ │   @ promotion.jl:637 within `==`
+│ │   %92  = cuTile.Intrinsics.addi(%17, 1)::cuTile.IntTile{Tuple{}, Int32}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:380 within `load`
+│ │   %32  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   %33  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   %34  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ │   %39  = cuTile.Intrinsics.make_partition_view(%8, (128, 32), cuTile.PaddingMode.Zero, %32)::cuTile.PartitionView{Float32, 2, Tuple{128, 32}}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:380 within `load`
+│ │   %44  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   %45  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   %46  = Core.PiNode(:(cuTile.nothing), Nothing)::Nothing
+│ │   @ Base_compiler.jl:54 within `getproperty`
+│ │   %47  = Base.getfield(_3, :ptr)::Ptr{Float32}
+│ │   %48  = Base.getfield(_3, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ │   %49  = Base.getfield(_3, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:386 within `#load#207`
+│ │   %50  = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %47, %48, %49)::cuTile.TensorView{Float32, 2}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:387 within `#load#207`
+│ │   %51  = cuTile.Intrinsics.make_partition_view(%50, (32, 128), cuTile.PaddingMode.Zero, %44)::cuTile.PartitionView{Float32, 2, Tuple{32, 128}}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:380 within `load`
+│ │   %90  = for %arg5 = %26:1:%92 init(%arg6 = %12::cuTile.FloatTile{Tuple{128, 128}, Float32}) -> Tuple{cuTile.FloatTile{Tuple{128, 128}, Float32}}
+│ │   │   @ int.jl:86 within `-`
+│ │   │   %41  = cuTile.Intrinsics.subi(%arg5, 1)::cuTile.IntTile{Tuple{}, Int32}
+│ │   │   @ ntuple.jl:51 within `ntuple`
+│ │   │   %42  = Core.tuple(%1, %41)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ │   │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ │   │   %43  = cuTile.Intrinsics.load_partition_view(%39, %33, %34, %42, %93)::cuTile.FloatTile{Tuple{128, 32}, Float32}
+│ │   │   @ ntuple.jl:51 within `ntuple`
+│ │   │   %54  = Core.tuple(%41, %3)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ │   │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:388 within `#load#207`
+│ │   │   %55  = cuTile.Intrinsics.load_partition_view(%51, %45, %46, %54, %93)::cuTile.FloatTile{Tuple{32, 128}, Float32}
+│ │   │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/overlays.jl:80 within `TFloat32`
+│ │   │   %57  = cuTile.Intrinsics.ftof(%43, cuTile.TFloat32)::cuTile.FloatTile{Tuple{128, 32}, cuTile.TFloat32}
+│ │   │   %60  = cuTile.Intrinsics.ftof(%55, cuTile.TFloat32)::cuTile.FloatTile{Tuple{32, 128}, cuTile.TFloat32}
+│ │   │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:1328 within `_muladd`
+│ │   │   %87  = cuTile.Intrinsics.mma(%60, %57, %arg6, false)::cuTile.FloatTile{Tuple{128, 128}, Float32}
+│ │   └   continue %87
+│ │   @ /home/gbaraldi/fun3/cutile-triton/dump_sci.jl:29 within `matmul`
+│ │   %29  = %92::cuTile.IntTile{Tuple{}, Int32}
+│ │   %30  = %92::cuTile.IntTile{Tuple{}, Int32}
+│ │   @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:1328 within `_muladd`
+│ │   %62  = getfield(%90, 1)::cuTile.FloatTile{Tuple{128, 128}, Float32}
+│ │   yield %62
+│ ├ else:
+│ └   yield %12
+│ @ /home/gbaraldi/fun3/cutile-triton/dump_sci.jl:36 within `matmul`
+│ %74  = getfield(%91, 1)::cuTile.FloatTile{Tuple{128, 128}, Float32}
+│ @ ntuple.jl:51 within `ntuple`
+│ %77  = Core.tuple(%1, %3)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ Base_compiler.jl:54 within `getproperty`
+│ %78  = Base.getfield(_4, :ptr)::Ptr{Float32}
+│ %79  = Base.getfield(_4, :sizes)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ %80  = Base.getfield(_4, :strides)::Tuple{cuTile.IntTile{Tuple{}, Int32}, cuTile.IntTile{Tuple{}, Int32}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:483 within `_store_reshaped`
+│ %81  = cuTile.Intrinsics.make_tensor_view(cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}, %78, %79, %80)::cuTile.TensorView{Float32, 2}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:484 within `_store_reshaped`
+│ %82  = cuTile.Intrinsics.make_partition_view(%81, (128, 128), cuTile.PaddingMode.Undetermined, nothing)::cuTile.PartitionView{Float32, 2, Tuple{128, 128}}
+│ @ /home/gbaraldi/.julia/packages/cuTile/Wt2pj/src/language/operations.jl:485 within `_store_reshaped`
+│ %83  = cuTile.Intrinsics.store_partition_view(%82, %74, nothing, nothing, %77, %93)::Nothing
+└ return Main.nothing
+)
+-- argtypes:
+  arg 1: Core.Const(Main.matmul)
+  arg 2: cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}
+  arg 3: cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}
+  arg 4: cuTile.TileArray{Float32, 2, cuTile.ArraySpec{2, 128, true, (1, 0), (0, 0)}}
+  arg 5: Core.Const(128)
+  arg 6: Core.Const(128)
+  arg 7: Core.Const(32)

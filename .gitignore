@@ -1,0 +1,6 @@
+# Python environments (regenerated: CondaPkg.toml pins triton; venv is legacy)
+venv/
+.CondaPkg/
+
+# scratch
+*.tmp
