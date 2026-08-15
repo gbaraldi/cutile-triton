@@ -33,31 +33,50 @@ Triton exists.
 
 ## Layout
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `TritonEmitter.jl` | StructuredIRCode → TTIR walker (~1,800 lines, the core) |
-| `TritonRun.jl` | in-process compile (PythonCall) + CUDA.jl launcher + `code_triton` reflection (`:ttir/:ttgir/:llir/:ptx/:sass`) |
-| `Triton.jl` | generated `tt` dialect builders (from Reactant.jl, tblgen'd from Triton's own `.td`) |
-| `triton_shim_module.jl` | overwrites `cuTile.cufunction` so unmodified cuTile code runs on this backend |
-| `run_cutile_tests.jl` | runs cuTile's own device test suite through the shim |
-| `test_correct.jl` | standalone correctness suite (vadd/rowsum/matmul/softmax) |
-| `bench_examples.jl` | benchmarks all cuTile examples (`CUTILE_BACKEND=native\|triton`) |
-| `bench*.jl`, `sweep_matmul.jl` | micro-benchmarks (TMA, fp16, descriptor overhead) |
-| `stages/` | full 6-stage lowering dump of one kernel (SCI→TTIR→TTGIR→LLIR→PTX→SASS) |
-| `sass/` | disassembly evidence for the tileiras-vs-triton scheduling analysis |
-| `report.html` | the full investigation report (pipeline, benchmarks, SASS anatomy, upstream survey) |
+| `src/TileTriton.jl` | package module: `triton_kernel`/`launch!`, `code_triton` reflection, `install_shim!`, `set_target!`/`use_rocm!` |
+| `src/emitter.jl` | `TritonEmitter`: StructuredIRCode → TTIR walker (~1,900 lines, the core) |
+| `src/runtime.jl` | `TritonRun`: in-process compile (PythonCall) + launcher, vendor-parameterized target |
+| `src/shim.jl` | `TritonShim` + `install_shim!()`: overwrite `cuTile.cufunction` so unmodified cuTile code runs here (opt-in) |
+| `src/dialects/Triton.jl` | generated `tt` dialect builders (from Reactant.jl, tblgen'd from Triton's `.td`) |
+| `ext/TileTritonAMDGPUExt.jl` | **experimental** ROCm target (see below) |
+| `test/runtests.jl` | standalone correctness suite |
+| `test/cutile_suite.jl` | runs cuTile's own device test suite through the shim |
+| `bench/` | example benchmarks (`CUTILE_BACKEND=native\|triton bench/examples.jl`) + micro-benchmarks |
+| `research/` | report.html, 6-stage lowering dumps, SASS scheduling analysis, logs |
 
 ## Setup
 
 ```julia
-] instantiate            # Julia deps (Project.toml/Manifest.toml)
+] activate .; instantiate      # Julia deps
 using CondaPkg; CondaPkg.resolve()   # pinned triton==3.7.1 (CondaPkg.toml)
-include("test_correct.jl")
+using TileTriton
+include("test/runtests.jl")
 ```
 
-Requires an NVIDIA GPU (tested sm_90) and CUDA driver. `env TRITON_NUM_WARPS`,
-`TRITON_ARG_ATTRS`, `TRITON_CONST_STRIDE`, `TRITON_DUMP_TTIR` override the
-autotuner/hints for experiments.
+Requires an NVIDIA GPU (tested sm_90). `TRITON_NUM_WARPS`, `TRITON_ARG_ATTRS`,
+`TRITON_CONST_STRIDE`, `TRITON_DUMP_TTIR` env vars override the autotuner and
+hint emission for experiments.
+
+## AMDGPU (experimental, untested on hardware)
+
+The compile side (TTIR → hsaco via the wheel's `hip` backend) is known-good
+from offline tests; the load/launch side needs validation on a ROCm box:
+
+```julia
+using AMDGPU, TileTriton
+TileTriton.use_rocm!()        # gfx arch + wavefront size from the device
+k = TritonRun.triton_kernel(my_cutile_kernel, argtypes; name="k")
+TritonRun.launch!(k, grid, rocarrays...)
+```
+
+Things to watch when bringing it up: the launcher passes raw `Ptr` kernel
+params via `hipModuleLaunchKernel` (mirrors the CUDA driver ABI); triton's
+hip metadata (`shared`, `global_scratch_size`) is honored the same way; the
+TMA/descriptor path and the tf32-vs-hints autotune splits are NVIDIA-tuned —
+expect the pointer path everywhere on CDNA, and `warp_size=64` changes the
+threads-per-CTA arithmetic (handled via `TargetInfo`).
 
 ## Notes
 
