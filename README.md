@@ -59,7 +59,7 @@ Requires an NVIDIA GPU (tested sm_90). `TRITON_NUM_WARPS`, `TRITON_ARG_ATTRS`,
 `TRITON_CONST_STRIDE`, `TRITON_DUMP_TTIR` env vars override the autotuner and
 hint emission for experiments.
 
-## AMDGPU (validated on MI300A, ROCm 6.4.2, gfx942)
+## AMDGPU (validated on MI300A, gfx942; ROCm 6.4.2 and 7.2.4)
 
 The same kernels compile and run through the wheel's `hip` backend:
 
@@ -70,14 +70,30 @@ k = TritonRun.triton_kernel(my_cutile_kernel, argtypes; name="k")
 TritonRun.launch!(k, grid, rocarrays...)
 ```
 
-The full standalone suite passes on an MI300A
-(`TILETRITON_TEST_BACKEND=rocm julia --project=. test/runtests.jl`),
-including the tf32 matmuls — CDNA3's XF32 MFMA absorbs
-`inputPrecision=tf32`, at tf32-like accuracy. Bring-up notes: the AMD
-launcher ABI matches CUDA's (declared args + a NULL global-scratch slot +
-profile scratch; `global_scratch_size` is absent from hip `KernelMetadata`),
-`warp_size=64` flows through `TargetInfo`, and the TMA path is
+Validated on an MI300A, identically under ROCm 6.4.2 and 7.2.4:
+
+- standalone suite 10/10 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
+  test/runtests.jl`), including the tf32 matmuls — CDNA3's XF32 MFMA
+  absorbs `inputPrecision=tf32` at tf32-like accuracy;
+- **cuTile's own device suite: 1,671 pass / 5 fail / 52 error** through the
+  shim. Every backend-relevant file matches CUDA exactly (atomics,
+  broadcast, control_flow, math, reductions, tile, ...); the delta vs the
+  CUDA run is entirely tests that require CUDA-the-package (random.jl
+  compares against cuTile's host-side RNG reference, which allocates a
+  `CuArray` internally; two `@cuda`-driver hint tests; one test spawning a
+  CUDA subprocess);
+- sanity perf (untuned, single tile shape): vadd 2.5 TB/s, f16 4096³
+  matmul 137 TFLOPS, f32 39.6 TFLOPS.
+
+Bring-up notes: the AMD launcher ABI matches CUDA's (declared args + a
+NULL global-scratch slot + profile scratch; `global_scratch_size` is
+absent from hip `KernelMetadata`), `warp_size=64` flows through
+`TargetInfo`, `num_stages` defaults to 2 (64KB LDS), and the TMA path is
 NVIDIA-only so `use_rocm!()` runs pointer loads everywhere.
+`use_rocm!()` also sets `AMDGCN_USE_BUFFER_ATOMICS=0`: triton 3.7.1's
+buffer-atomics lowering emits the nonexistent LLVM intrinsic
+`...raw.ptr.buffer.atomic.exch` (the real one is `*.swap`), killing every
+`atomic_xchg` at compile — worth an upstream issue.
 
 ## Notes
 

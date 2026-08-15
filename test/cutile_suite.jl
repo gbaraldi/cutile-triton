@@ -3,10 +3,30 @@
 # the triton wheel and launches via CUDA.jl. Unmodified test files then
 # exercise our backend; per-file pass/fail/error counts = the coverage map.
 using Test
-using CUDA
 using cuTile
 import cuTile as ct
 using TileTriton
+
+const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
+@static if get(ENV, "TILETRITON_TEST_BACKEND", "cuda") == "rocm"
+    using AMDGPU
+    # the tests are written against the CUDA.jl array API; the surface they
+    # use is tiny — forward it to AMDGPU
+    @eval module CUDACompat
+        using AMDGPU
+        const CuArray = AMDGPU.ROCArray
+        zeros(args...) = AMDGPU.zeros(args...)
+        rand(args...)  = AMDGPU.rand(args...)
+        randn(args...) = AMDGPU.randn(args...)
+        ones(args...)  = AMDGPU.ones(args...)
+        fill(args...)  = AMDGPU.fill(args...)
+        synchronize(args...) = AMDGPU.synchronize(args...)
+        const var"@allowscalar" = AMDGPU.var"@allowscalar"
+    end
+    TileTriton.use_rocm!()
+else
+    using CUDA
+end
 
 TileTriton.install_shim!()
 
@@ -45,7 +65,13 @@ try
                     try
                         # each file in a fresh module with the suite's imports
                         m = Module(Symbol("Test_", replace(file, "." => "_")))
-                        Core.eval(m, :(using Test, CUDA, cuTile))
+                        if BACKEND == "rocm"
+                            Core.eval(m, :(using Test, cuTile))
+                            Core.eval(m, :(const CUDA = $CUDACompat))
+                            Core.eval(m, :(const CuArray = $(CUDACompat.CuArray)))
+                        else
+                            Core.eval(m, :(using Test, CUDA, cuTile))
+                        end
                         Core.eval(m, :(import cuTile as ct))
                         Core.eval(m, :(import TileTriton: TritonShim))
                         # @filecheck FileCheck-verifies native Tile IR text —
@@ -66,10 +92,13 @@ try
             flush(stdout)
             # contain context poisoning (illegal instruction etc.) per file;
             # cached CuModules belong to the old context, so drop them too
-            try
-                CUDA.device_reset!()
-                empty!(TileTriton.TritonShim.KERNEL_CACHE)
-            catch
+            # (no HIP equivalent — AMDGPU.jl has no device_reset!)
+            if BACKEND != "rocm"
+                try
+                    CUDA.device_reset!()
+                    empty!(TileTriton.TritonShim.KERNEL_CACHE)
+                catch
+                end
             end
         end
     end

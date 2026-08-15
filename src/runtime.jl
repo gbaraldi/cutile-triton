@@ -34,6 +34,7 @@ end
 # when a hip target is active)
 const _load_module = Ref{Any}(nothing)   # (bin::Vector{UInt8}, name, shared) -> (mod, fun)
 const _raw_launch = Ref{Any}(nothing)    # (fun, types, vals; threads, blocks, shmem)
+const _sync = Ref{Any}(nothing)          # () -> device synchronize
 
 function _cuda_load(bin, name, shared)
     mod = CuModule(bin)
@@ -60,6 +61,10 @@ function _triton()
     end
     return _pycompiler[], _pybackends[]
 end
+
+# Python's os.environ snapshots the environment at interpreter start; triton's
+# knobs read through it, so backend workarounds must set it there, not ENV.
+_py_setenv!(k::String, v::String) = (pyimport("os").environ[k] = v; nothing)
 
 "Compile a TTIR string in-process; returns the triton CompiledKernel (Py)."
 function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int)

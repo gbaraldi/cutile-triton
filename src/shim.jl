@@ -35,13 +35,19 @@ function get_kernel(@nospecialize(f), @nospecialize(tt))
     return k
 end
 
+_iscuda() = TritonRun._default_target().backend == "cuda"
+
 # Flatten already-converted kernel args to the Triton ABI: TileArray →
 # (ptr, sizes..., strides...); ghosts skipped; primitives passed through.
-function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x))
+function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x), cuda::Bool)
     T = typeof(x)
     if x isa ct.TileArray
         ET = eltype(x)
-        push!(types, CuPtr{ET}); push!(vals, CuPtr{ET}(UInt(x.ptr)))
+        if cuda
+            push!(types, CuPtr{ET}); push!(vals, CuPtr{ET}(UInt(x.ptr)))
+        else
+            push!(types, Ptr{ET}); push!(vals, Ptr{ET}(x.ptr))
+        end
         for s in x.sizes;   push!(types, Int32); push!(vals, s); end
         for s in x.strides; push!(types, Int32); push!(vals, s); end
     elseif Base.issingletontype(T)
@@ -50,7 +56,7 @@ function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x))
         push!(types, T); push!(vals, x)
     else
         for i in 1:fieldcount(T)
-            flatten_rt!(types, vals, getfield(x, i))
+            flatten_rt!(types, vals, getfield(x, i), cuda)
         end
     end
     return
@@ -58,26 +64,34 @@ end
 
 function _launch_one(inner::TritonRun.TritonKernel, types, vals, g)
     scratch = nothing
-    if inner.global_scratch_size > 0
+    if inner.global_scratch_size > 0   # NVIDIA-only (TMA descriptors)
         scratch = CuArray{UInt8}(undef, prod(g) * inner.global_scratch_size)
         vals = copy(vals)
         vals[end - 1] = reinterpret(CuPtr{Cvoid}, pointer(scratch))
     end
     GC.@preserve scratch begin
-        cudacall(inner.fun, Tuple{types...}, vals...;
-                 threads=inner.num_warps * inner.warp_size, blocks=g, shmem=inner.shared)
+        launchf = TritonRun._raw_launch[] === nothing ? TritonRun._cuda_launch :
+                                                        TritonRun._raw_launch[]
+        launchf(inner.fun, types, vals;
+                threads=inner.num_warps * inner.warp_size, blocks=g, shmem=inner.shared)
     end
     return nothing
 end
 
+_device_sync() =
+    (TritonRun._sync[] === nothing ? CUDA.synchronize : TritonRun._sync[])()
+
 function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwargs...)
+    cuda = _iscuda()
     types = Any[]; vals = Any[]
     for a in args
-        flatten_rt!(types, vals, a)
+        flatten_rt!(types, vals, a, cuda)
     end
     push!(types, UInt32); push!(vals, Base.rand(UInt32))  # KernelState seed
-    push!(types, CuPtr{Cvoid}); push!(vals, CU_NULL)   # global scratch
-    push!(types, CuPtr{Cvoid}); push!(vals, CU_NULL)   # profile scratch
+    PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
+    NULLP = cuda ? CU_NULL : Ptr{Cvoid}(0)
+    push!(types, PT); push!(vals, NULLP)   # global scratch
+    push!(types, PT); push!(vals, NULLP)   # profile scratch
     g = blocks isa Integer ? (Int(blocks), 1, 1) :
         length(blocks) == 2 ? (blocks[1], blocks[2], 1) : Tuple(blocks)
     if k.chosen == 0
@@ -86,7 +100,11 @@ function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwarg
         best = 1; best_t = Inf
         for (i, cand) in enumerate(k.candidates)
             _launch_one(cand, types, vals, g)  # warmup/compile caches
-            t = CUDA.@elapsed _launch_one(cand, types, vals, g)
+            _device_sync()
+            t0 = time_ns()
+            _launch_one(cand, types, vals, g)
+            _device_sync()
+            t = time_ns() - t0
             t < best_t && (best_t = t; best = i)
         end
         k.chosen = best

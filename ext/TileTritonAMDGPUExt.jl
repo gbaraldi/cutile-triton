@@ -5,7 +5,14 @@ module TileTritonAMDGPUExt
 
 using AMDGPU
 using TileTriton
-using TileTriton.TritonRun: TritonRun, set_target!, _load_module, _raw_launch
+using TileTriton.TritonRun: TritonRun, set_target!, _load_module, _raw_launch, _sync
+import cuTile
+
+# cuTile's generic TileArray(arr) refuses plain-`Ptr` arrays as a host-memory
+# guard; ROCArray hands out plain `Ptr` for device memory (HIP unified
+# addressing), so identify it explicitly. This is what lets unmodified cuTile
+# launches (`cuTile.launch`, the test suite) run on ROCm through the shim.
+cuTile.device_pointer(arr::ROCArray{T}) where {T} = pointer(arr)
 
 """
     TileTriton.use_rocm!()
@@ -22,6 +29,11 @@ function TileTriton.use_rocm!()
     set_target!("hip", arch, ws)
     _load_module[] = _hip_load
     _raw_launch[] = _hip_launch
+    _sync[] = AMDGPU.synchronize
+    # triton 3.7.1's buffer-atomics lowering emits the nonexistent LLVM
+    # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
+    # kills every atomic_xchg at compile. Buffer loads/stores stay on.
+    TritonRun._py_setenv!("AMDGCN_USE_BUFFER_ATOMICS", "0")
     @info "TileTriton targeting ROCm" arch wavefront=ws
     return nothing
 end
