@@ -90,15 +90,17 @@ Validated on an MI300A, identically under ROCm 6.4.2 and 7.2.4:
   | vadd 2²⁸ | 2,658 GB/s | 2,988 GB/s broadcast / 2,881 `@roc` |
   | rowsum 131072×512 | 2,441 GB/s | 192 GB/s (`sum!`, GPUArrays mapreduce) |
   | softmax 4096×16384 | 2,660 GB/s | 223 GB/s (GPUArrays composition) |
-  | matmul f16 4096³ | 137.6 TFLOPS | 71.8 rocBLAS `gemm!` / **3.0 via `mul!`** |
+  | matmul f16 4096³ | 137.6 TFLOPS | 224.1 `gemm_ex` / 71.8 `gemm!` / **3.0 `mul!`** |
   | matmul f32 4096³ | 40.0 TFLOPS | 53.8 rocBLAS |
 
   Streaming is ~10% behind native; tile-level reductions/fusions are >10×
-  ahead of GPUArrays; f16 matmul beats rocBLAS's hgemm path ~1.9× (f32 is
-  1.35× behind — tile shapes are NVIDIA-tuned). The 3-TFLOPS `mul!` row is
-  an AMDGPU.jl bug on Julia 1.12: `generic_matmatmul_wrapper!` sends
-  Float16 to GPUArrays' generic kernel instead of rocBLAS — worth an
-  AMDGPU.jl issue.
+  ahead of GPUArrays; matmul sits between rocBLAS's legacy and tuned paths
+  (NVIDIA-tuned tile shapes — CDNA autotuning is the open lever). The f16
+  native column is a ladder: `gemm_ex` with f32 compute is the
+  Tensile-tuned path; `gemm!` maps to legacy untuned `hgemm`; and `mul!`
+  is an AMDGPU.jl bug on Julia 1.12 (`generic_matmatmul_wrapper!` sends
+  Float16 to GPUArrays' generic kernel — 75× off the fix, worth an
+  AMDGPU.jl issue). Numbers identical under prerelease rocm/7.14.0.
 
 Bring-up notes: the AMD launcher ABI matches CUDA's (declared args + a
 NULL global-scratch slot + profile scratch; `global_scratch_size` is
