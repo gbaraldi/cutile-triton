@@ -1,6 +1,6 @@
-# EXPERIMENTAL — written without AMD hardware to iterate on; the compile side
-# (TTIR → hsaco via the wheel's `hip` backend) is known-good from offline
-# tests, the load/launch side needs validation on a ROCm box.
+# Validated on MI300A (gfx942, ROCm 6.4.2): full standalone suite passes.
+# The HIP launch ABI mirrors the CUDA driver one (array of pointers to the
+# argument values; triton's hip metadata provides warp_size/shared).
 module TileTritonAMDGPUExt
 
 using AMDGPU

@@ -103,25 +103,27 @@ atomics, both a 4- and an 8-warp build for first-launch autotuning (mirrors
 """
 function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   name::String, use_tma::Bool=true)
+    use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma)
     if !meta.has_dot
-        return [compile_kernel(ttir, argspec; name, num_warps=4, num_stages=3)]
+        return [compile_kernel(ttir, argspec; name, num_warps=4)]
     end
     meta.has_atomic &&
-        return [compile_kernel(ttir, argspec; name, num_warps=8, num_stages=3)]
+        return [compile_kernel(ttir, argspec; name, num_warps=8)]
     # dot kernels: TMA-vs-pointer and argument hints both interact with the
     # tensor-core pipeline in shape-dependent ways — race load style × hints
     # × warps (unique TTIRs only; e.g. TMA-ineligible kernels dedupe)
     variants = unique([ttir,
                        emit_ttir(f, argtypes; name, use_tma=false, hints=true)[1],
                        emit_ttir(f, argtypes; name, use_tma=false, hints=false)[1]])
-    return [compile_kernel(t, argspec; name, num_warps=w, num_stages=3)
+    return [compile_kernel(t, argspec; name, num_warps=w)
             for t in variants for w in (4, 8)]
 end
 
 function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        name::String, num_warps::Union{Int,Nothing}=nothing,
-                       num_stages::Int=3, use_tma::Bool=true)
+                       num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true)
+    use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
@@ -129,7 +131,12 @@ function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
     return compile_kernel(ttir, argspec; name, num_warps, num_stages)
 end
 
-function compile_kernel(ttir::String, argspec; name::String, num_warps::Int, num_stages::Int)
+# triton's own backend defaults: 3 pipeline stages on NVIDIA, 2 on AMD (64KB LDS)
+_default_stages() = _default_target().backend == "cuda" ? 3 : 2
+
+function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
+                        num_stages::Union{Int,Nothing}=nothing)
+    num_stages = something(num_stages, _default_stages())
     if haskey(ENV, "TRITON_DUMP_TTIR")
         mkpath(ENV["TRITON_DUMP_TTIR"])
         write(joinpath(ENV["TRITON_DUMP_TTIR"], "$(name)_w$(num_warps)_$(hash(ttir) % 10000).ttir"), ttir)
@@ -139,7 +146,9 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int, num
     bin = pyconvert(Vector{UInt8}, k.asm[t.binkey])
     shared = pyconvert(Int, k.metadata.shared)
     warp_size = pyconvert(Int, k.metadata.warp_size)
-    gss = pyconvert(Int, k.metadata.global_scratch_size)
+    # NVIDIA-only metadata field; the AMD backend has no global scratch
+    # (its launcher passes NULL in that ABI slot).
+    gss = pyconvert(Int, pygetattr(k.metadata, "global_scratch_size", 0))
     loadf = _load_module[] === nothing ? _cuda_load : _load_module[]
     mod, fun = loadf(bin, name, shared)
     return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir)
@@ -209,14 +218,15 @@ end
 
 """
     code_triton([io], f, argtypes; stage=:ttir, name="kernel",
-                num_warps=4, num_stages=3, use_tma=true)
+                num_warps=4, num_stages=backend default, use_tma=true)
 
 Reflection for the Triton backend, mirroring cuTile's `@device_code_*` family.
 `stage` is one of `:ttir` (as emitted), `:ttgir`, `:llir`, `:ptx`, `:sass`.
 """
 function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      stage::Symbol=:ttir, name::String="kernel",
-                     num_warps::Int=4, num_stages::Int=3, use_tma::Bool=true)
+                     num_warps::Int=4, num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true)
+    use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     ttir, _ = emit_ttir(f, argtypes; name, use_tma)
     if stage === :ttir
         print(io, ttir)

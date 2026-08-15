@@ -40,7 +40,7 @@ Triton exists.
 | `src/runtime.jl` | `TritonRun`: in-process compile (PythonCall) + launcher, vendor-parameterized target |
 | `src/shim.jl` | `TritonShim` + `install_shim!()`: overwrite `cuTile.cufunction` so unmodified cuTile code runs here (opt-in) |
 | `src/dialects/Triton.jl` | generated `tt` dialect builders (from Reactant.jl, tblgen'd from Triton's `.td`) |
-| `ext/TileTritonAMDGPUExt.jl` | **experimental** ROCm target (see below) |
+| `ext/TileTritonAMDGPUExt.jl` | ROCm target (validated on MI300A, see below) |
 | `test/runtests.jl` | standalone correctness suite |
 | `test/cutile_suite.jl` | runs cuTile's own device test suite through the shim |
 | `bench/` | example benchmarks (`CUTILE_BACKEND=native\|triton bench/examples.jl`) + micro-benchmarks |
@@ -59,10 +59,9 @@ Requires an NVIDIA GPU (tested sm_90). `TRITON_NUM_WARPS`, `TRITON_ARG_ATTRS`,
 `TRITON_CONST_STRIDE`, `TRITON_DUMP_TTIR` env vars override the autotuner and
 hint emission for experiments.
 
-## AMDGPU (experimental, untested on hardware)
+## AMDGPU (validated on MI300A, ROCm 6.4.2, gfx942)
 
-The compile side (TTIR → hsaco via the wheel's `hip` backend) is known-good
-from offline tests; the load/launch side needs validation on a ROCm box:
+The same kernels compile and run through the wheel's `hip` backend:
 
 ```julia
 using AMDGPU, TileTriton
@@ -71,12 +70,14 @@ k = TritonRun.triton_kernel(my_cutile_kernel, argtypes; name="k")
 TritonRun.launch!(k, grid, rocarrays...)
 ```
 
-Things to watch when bringing it up: the launcher passes raw `Ptr` kernel
-params via `hipModuleLaunchKernel` (mirrors the CUDA driver ABI); triton's
-hip metadata (`shared`, `global_scratch_size`) is honored the same way; the
-TMA/descriptor path and the tf32-vs-hints autotune splits are NVIDIA-tuned —
-expect the pointer path everywhere on CDNA, and `warp_size=64` changes the
-threads-per-CTA arithmetic (handled via `TargetInfo`).
+The full standalone suite passes on an MI300A
+(`TILETRITON_TEST_BACKEND=rocm julia --project=. test/runtests.jl`),
+including the tf32 matmuls — CDNA3's XF32 MFMA absorbs
+`inputPrecision=tf32`, at tf32-like accuracy. Bring-up notes: the AMD
+launcher ABI matches CUDA's (declared args + a NULL global-scratch slot +
+profile scratch; `global_scratch_size` is absent from hip `KernelMetadata`),
+`warp_size=64` flows through `TargetInfo`, and the TMA path is
+NVIDIA-only so `use_rocm!()` runs pointer loads everywhere.
 
 ## Notes
 

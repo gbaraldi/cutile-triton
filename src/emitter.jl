@@ -55,8 +55,11 @@ export emit_ttir, ArgSpec
 # overwrite fixes it for both the Triton backend and native tileiras in this
 # session.
 # Upstream bugfix applied at runtime (evaluation into cuTile is not
-# allowed during precompilation).
+# allowed during precompilation — including when a package extension
+# precompiles with TileTriton loaded, so skip under jl_generating_output;
+# every real session still runs this __init__ outside precompilation).
 function __init__()
+    ccall(:jl_generating_output, Cint, ()) == 1 && return
     @eval ct function promote_scalar_type(@nospecialize(T))
         T isa Union && return nothing
         T <: Number && return Tile{T, Tuple{}}

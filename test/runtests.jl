@@ -1,8 +1,18 @@
 # Correctness tests: cuTile kernels through the Triton backend vs CPU references.
+# TILETRITON_TEST_BACKEND=cuda (default) | rocm picks the vendor.
 using TileTriton
 using TileTriton.TritonEmitter, TileTriton.TritonRun
-using CUDA
 import cuTile as ct
+
+const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
+@static if get(ENV, "TILETRITON_TEST_BACKEND", "cuda") == "rocm"
+    using AMDGPU
+    const GPU = AMDGPU
+    TileTriton.use_rocm!()
+else
+    using CUDA
+    const GPU = CUDA
+end
 
 const Spec1 = typeof(ct.ArraySpec{1}(128, true, (1,), (0,)))
 const Spec2 = typeof(ct.ArraySpec{2}(128, true, (1, 0), (0, 0)))
@@ -30,9 +40,9 @@ for T in (Float32, Float16, Float64), n in (1_024_000, 999_999)  # non-divisible
     tile = 1024
     k = TritonRun.triton_kernel(vadd, Tuple{TA1(T), TA1(T), TA1(T), ct.Constant{Int, tile}};
                                 name="vadd", num_warps=4)
-    a = CUDA.rand(T, n); b = CUDA.rand(T, n); c = CUDA.zeros(T, n)
+    a = GPU.rand(T, n); b = GPU.rand(T, n); c = GPU.zeros(T, n)
     TritonRun.launch!(k, cld(n, tile), a, b, c)
-    CUDA.synchronize()
+    GPU.synchronize()
     check("vadd $T n=$n", Array(c) ≈ Array(a) .+ Array(b))
 end
 
@@ -49,10 +59,10 @@ let m = 4096, n = 128, tm = 64, tn = 128
     k = TritonRun.triton_kernel(rowsum, Tuple{TA2(Float32), TA2(Float32),
                                               ct.Constant{Int, tm}, ct.Constant{Int, tn}};
                                 name="rowsum", num_warps=4)
-    a = CUDA.rand(Float32, m, n)
-    out = CUDA.zeros(Float32, m, 1)
+    a = GPU.rand(Float32, m, n)
+    out = GPU.zeros(Float32, m, 1)
     TritonRun.launch!(k, cld(m, tm), a, out)
-    CUDA.synchronize()
+    GPU.synchronize()
     check("rowsum $m x $n", Array(out) ≈ sum(Array(a); dims=2))
 end
 
@@ -79,9 +89,9 @@ for (M, N, K) in ((512, 512, 512), (300, 260, 200))  # divisible + ragged
                                               ct.Constant{Int, tm}, ct.Constant{Int, tn},
                                               ct.Constant{Int, tk}};
                                 name="matmul", num_warps=8)
-    A = CUDA.rand(Float32, M, K); B = CUDA.rand(Float32, K, N); C = CUDA.zeros(Float32, M, N)
+    A = GPU.rand(Float32, M, K); B = GPU.rand(Float32, K, N); C = GPU.zeros(Float32, M, N)
     TritonRun.launch!(k, (cld(M, tm), cld(N, tn)), A, B, C)
-    CUDA.synchronize()
+    GPU.synchronize()
     ref = Array(A) * Array(B)
     got = Array(C)
     err = maximum(abs.(got .- ref)) / max(maximum(abs.(ref)), 1)
@@ -111,11 +121,11 @@ let n = 1000, m = 2048, tile = 1024   # n < tile → masked + NegInf-padded
     k = TritonRun.triton_kernel(softmax, Tuple{TA2(Float32), TA2(Float32),
                                                ct.Constant{Int, tile}};
                                 name="softmax", num_warps=4)
-    x = CUDA.rand(Float32, n, m)
-    y = CUDA.zeros(Float32, n, m)
+    x = GPU.rand(Float32, n, m)
+    y = GPU.zeros(Float32, n, m)
     grid = 512  # fewer blocks than columns → exercises the persistent loop
     TritonRun.launch!(k, grid, y, x)
-    CUDA.synchronize()
+    GPU.synchronize()
     xh = Array(x)
     eh = exp.(xh .- maximum(xh; dims=1))
     ref = eh ./ sum(eh; dims=1)
