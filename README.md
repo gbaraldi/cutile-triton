@@ -82,8 +82,23 @@ Validated on an MI300A, identically under ROCm 6.4.2 and 7.2.4:
   compares against cuTile's host-side RNG reference, which allocates a
   `CuArray` internally; two `@cuda`-driver hint tests; one test spawning a
   CUDA subprocess);
-- sanity perf (untuned, single tile shape): vadd 2.5 TB/s, f16 4096³
-  matmul 137 TFLOPS, f32 39.6 TFLOPS.
+- head-to-head vs native AMDGPU.jl on the same workloads
+  (`bench/rocm_compare.jl`, ROCm 7.2.4, untuned single tile shape):
+
+  | workload | triton | native AMDGPU.jl |
+  |---|---|---|
+  | vadd 2²⁸ | 2,658 GB/s | 2,988 GB/s broadcast / 2,881 `@roc` |
+  | rowsum 131072×512 | 2,441 GB/s | 192 GB/s (`sum!`, GPUArrays mapreduce) |
+  | softmax 4096×16384 | 2,660 GB/s | 223 GB/s (GPUArrays composition) |
+  | matmul f16 4096³ | 137.6 TFLOPS | 71.8 rocBLAS `gemm!` / **3.0 via `mul!`** |
+  | matmul f32 4096³ | 40.0 TFLOPS | 53.8 rocBLAS |
+
+  Streaming is ~10% behind native; tile-level reductions/fusions are >10×
+  ahead of GPUArrays; f16 matmul beats rocBLAS's hgemm path ~1.9× (f32 is
+  1.35× behind — tile shapes are NVIDIA-tuned). The 3-TFLOPS `mul!` row is
+  an AMDGPU.jl bug on Julia 1.12: `generic_matmatmul_wrapper!` sends
+  Float16 to GPUArrays' generic kernel instead of rocBLAS — worth an
+  AMDGPU.jl issue.
 
 Bring-up notes: the AMD launcher ABI matches CUDA's (declared args + a
 NULL global-scratch slot + profile scratch; `global_scratch_size` is
