@@ -1,7 +1,6 @@
 # Quick tile-config sweep for the Julia→Triton matmul on H100.
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-using .TritonEmitter, .TritonRun
+using TileTriton
+using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA, Statistics
 import cuTile as ct
 

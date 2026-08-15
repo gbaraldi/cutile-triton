@@ -1,3 +1,8 @@
+name = "TileTriton"
+uuid = "41c06a59-6785-47c7-9807-2e34c1576fec"
+authors = ["Gabriel Baraldi <gabriel.baraldi@juliahub.com>", "Claude"]
+version = "0.1.0"
+
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CondaPkg = "992eb4ea-22a4-4c89-a5bb-47a3300528ab"
@@ -8,3 +13,13 @@ MLIR_jll = "a70bccb4-a5c0-5e2e-a329-e731972457e8"
 NVTX = "5da4648a-3479-48b8-97b9-01cb529c0a1f"
 PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
 cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
+
+[weakdeps]
+AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+
+[extensions]
+TileTritonAMDGPUExt = "AMDGPU"
+
+[compat]
+julia = "1.11"
+cuTile = "0.3.2"

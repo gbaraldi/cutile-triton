@@ -1,7 +1,6 @@
 # Correctness tests: cuTile kernels through the Triton backend vs CPU references.
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-using .TritonEmitter, .TritonRun
+using TileTriton
+using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA
 import cuTile as ct
 

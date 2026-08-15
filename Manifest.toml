@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "900844937bf5652456739ede19c0ec28d1c1a5f6"
+project_hash = "cab0af9852d99201a8dd2c8bb956e147f19beea0"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -713,6 +713,18 @@ version = "1.10.0"
 deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
 uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 version = "1.11.0"
+
+[[deps.TileTriton]]
+deps = ["CUDA", "CondaPkg", "FFTW", "IRStructurizer", "MLIR", "MLIR_jll", "NVTX", "PythonCall", "cuTile"]
+path = "."
+uuid = "41c06a59-6785-47c7-9807-2e34c1576fec"
+version = "0.1.0"
+
+    [deps.TileTriton.extensions]
+    TileTritonAMDGPUExt = "AMDGPU"
+
+    [deps.TileTriton.weakdeps]
+    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 
 [[deps.Tracy]]
 deps = ["ExprTools", "LibTracyClient_jll", "Libdl"]

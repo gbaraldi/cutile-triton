@@ -1,7 +1,6 @@
 # fp16 matmul: does the descriptor/TMA path pay off for f16 where tf32 didn't?
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-using .TritonEmitter, .TritonRun
+using TileTriton
+using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA, LinearAlgebra, Statistics
 import cuTile as ct
 

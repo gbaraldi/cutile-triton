@@ -7,9 +7,8 @@ using Statistics
 
 const BACKEND = get(ENV, "CUTILE_BACKEND", "native")
 if BACKEND == "triton"
-    include(joinpath(@__DIR__, "TritonEmitter.jl"))
-    include(joinpath(@__DIR__, "TritonRun.jl"))
-    include(joinpath(@__DIR__, "triton_shim_module.jl"))
+    using TileTriton
+    TileTriton.install_shim!()
 end
 
 const EXDIR = joinpath(dirname(dirname(pathof(cuTile))), "examples")

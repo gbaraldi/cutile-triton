@@ -1,7 +1,6 @@
 # TMA descriptor path: matmul 4096³ tf32 on H100.
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-using .TritonEmitter, .TritonRun
+using TileTriton
+using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA, Statistics
 import cuTile as ct
 

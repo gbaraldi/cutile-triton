@@ -7,7 +7,44 @@ using CUDA
 using PythonCall
 using ..TritonEmitter: emit_ttir, ArgSpec
 
-export triton_kernel, launch!, code_triton
+export triton_kernel, launch!, code_triton, set_target!
+
+"Compilation/launch target. `backend` is \"cuda\" or \"hip\"; `arch` is the
+sm number (Int) or gfx arch (String); `binkey` the asm-dict key."
+struct TargetInfo
+    backend::String
+    arch::Union{Int,String}
+    warp_size::Int
+    binkey::String
+end
+
+const ACTIVE_TARGET = Ref{Union{Nothing,TargetInfo}}(nothing)
+set_target!(t::TargetInfo) = (ACTIVE_TARGET[] = t)
+set_target!(backend, arch, warp_size) =
+    set_target!(TargetInfo(backend, arch, warp_size, backend == "cuda" ? "cubin" : "hsaco"))
+
+function _default_target()
+    t = ACTIVE_TARGET[]
+    t !== nothing && return t
+    sm = CUDA.capability(CUDA.device())
+    TargetInfo("cuda", sm.major * 10 + sm.minor, 32, "cubin")
+end
+
+# pluggable module-load and raw-launch (the AMDGPU extension replaces these
+# when a hip target is active)
+const _load_module = Ref{Any}(nothing)   # (bin::Vector{UInt8}, name, shared) -> (mod, fun)
+const _raw_launch = Ref{Any}(nothing)    # (fun, types, vals; threads, blocks, shmem)
+
+function _cuda_load(bin, name, shared)
+    mod = CuModule(bin)
+    fun = CuFunction(mod, name)
+    if shared > 48 * 1024
+        CUDA.attributes(fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = shared
+    end
+    return mod, fun
+end
+_cuda_launch(fun, types, vals; threads, blocks, shmem) =
+    cudacall(fun, Tuple{types...}, vals...; threads, blocks, shmem)
 
 # lazy one-time imports (the wheel import costs ~1s once per session,
 # vs. per-kernel with the previous subprocess driver)
@@ -29,8 +66,8 @@ function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int
     tc, bc = _triton()
     path = joinpath(mktempdir(), "$name.ttir")
     write(path, ttir)
-    sm = CUDA.capability(CUDA.device())
-    target = bc.GPUTarget("cuda", sm.major * 10 + sm.minor, 32)
+    t = _default_target()
+    target = bc.GPUTarget(t.backend, t.arch, t.warp_size)
     opts = pydict(Dict("num_warps" => num_warps, "num_stages" => num_stages))
     try
         return tc.compile(path; target=target, options=opts)
@@ -41,8 +78,8 @@ function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int
 end
 
 struct TritonKernel
-    fun::CuFunction
-    mod::CuModule            # keep alive
+    fun::Any
+    mod::Any                 # keep alive
     name::String
     num_warps::Int
     warp_size::Int
@@ -98,15 +135,13 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int, num
         write(joinpath(ENV["TRITON_DUMP_TTIR"], "$(name)_w$(num_warps)_$(hash(ttir) % 10000).ttir"), ttir)
     end
     k = _compile_py(ttir, name, num_warps, num_stages)
-    cubin = pyconvert(Vector{UInt8}, k.asm["cubin"])
+    t = _default_target()
+    bin = pyconvert(Vector{UInt8}, k.asm[t.binkey])
     shared = pyconvert(Int, k.metadata.shared)
     warp_size = pyconvert(Int, k.metadata.warp_size)
     gss = pyconvert(Int, k.metadata.global_scratch_size)
-    mod = CuModule(cubin)
-    fun = CuFunction(mod, name)
-    if shared > 48 * 1024
-        CUDA.attributes(fun)[CUDA.FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES] = shared
-    end
+    loadf = _load_module[] === nothing ? _cuda_load : _load_module[]
+    mod, fun = loadf(bin, name, shared)
     return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir)
 end
 
@@ -115,12 +150,18 @@ function flatten_args(spec::Vector{ArgSpec}, args)
     length(spec) == length(args) || error("expected $(length(spec)) kernel arguments")
     types = Any[]
     vals = Any[]
+    cuda = _default_target().backend == "cuda"
     for (s, a) in zip(spec, args)
         if s.kind === :tilearray
-            a isa CuArray || error("expected CuArray for tilearray argument")
+            a isa AbstractArray || error("expected a GPU array for tilearray argument")
             eltype(a) === s.elty || error("eltype mismatch: $(eltype(a)) vs $(s.elty)")
             ndims(a) == s.ndims || error("ndims mismatch")
-            push!(types, CuPtr{s.elty}); push!(vals, pointer(a))
+            p = pointer(a)
+            if cuda
+                push!(types, CuPtr{s.elty}); push!(vals, p)
+            else
+                push!(types, Ptr{s.elty}); push!(vals, Ptr{s.elty}(UInt(p)))
+            end
             for d in 1:s.ndims
                 push!(types, Int32); push!(vals, Int32(size(a, d)))
             end
@@ -135,8 +176,10 @@ function flatten_args(spec::Vector{ArgSpec}, args)
     # implicit KernelState seed (mirrors cuTile's ABI)
     push!(types, UInt32); push!(vals, Base.rand(UInt32))
     # trailing global-scratch and profile-scratch pointers (triton >= 3.2 ABI)
-    push!(types, CuPtr{Cvoid}); push!(vals, CU_NULL)
-    push!(types, CuPtr{Cvoid}); push!(vals, CU_NULL)
+    PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
+    NULLP = cuda ? CU_NULL : Ptr{Cvoid}(0)
+    push!(types, PT); push!(vals, NULLP)
+    push!(types, PT); push!(vals, NULLP)
     return Tuple{types...}, vals
 end
 
@@ -157,8 +200,9 @@ function launch!(k::TritonKernel, grid, args...)
         vals[end - 1] = reinterpret(CuPtr{Cvoid}, pointer(scratch))
     end
     GC.@preserve scratch begin
-        cudacall(k.fun, tt, vals...;
-                 threads=k.num_warps * k.warp_size, blocks=g, shmem=k.shared)
+        launchf = _raw_launch[] === nothing ? _cuda_launch : _raw_launch[]
+        launchf(k.fun, collect(tt.parameters), vals;
+                threads=k.num_warps * k.warp_size, blocks=g, shmem=k.shared)
     end
     return nothing
 end

@@ -28,7 +28,7 @@ module Dialects
 using ..IR: NamedAttribute
 operandsegmentsizes(segments) = NamedAttribute("operandSegmentSizes", Int32.(segments))
 resultsegmentsizes(segments) = NamedAttribute("resultSegmentSizes", Int32.(segments))
-include(joinpath(@__DIR__, "Triton.jl"))
+include(joinpath(@__DIR__, "dialects", "Triton.jl"))
 end
 end
 
@@ -54,24 +54,29 @@ export emit_ttir, ArgSpec
 # Julia 1.12 (hvcat/hvncat kernels). Guard Unions conservatively. This
 # overwrite fixes it for both the Triton backend and native tileiras in this
 # session.
-@eval ct function promote_scalar_type(@nospecialize(T))
-    T isa Union && return nothing
-    T <: Number && return Tile{T, Tuple{}}
-    if T <: Tuple
-        params = T.parameters
-        any(Base.isvarargtype, params) && return nothing
-        any_promoted = false
-        new_params = map(params) do P
-            P = CC.widenconst(P)
-            if P <: Number && !(P <: Tile)
-                any_promoted = true
-                Tile{P, Tuple{}}
-            else
-                P
+# Upstream bugfix applied at runtime (evaluation into cuTile is not
+# allowed during precompilation).
+function __init__()
+    @eval ct function promote_scalar_type(@nospecialize(T))
+        T isa Union && return nothing
+        T <: Number && return Tile{T, Tuple{}}
+        if T <: Tuple
+            params = T.parameters
+            any(Base.isvarargtype, params) && return nothing
+            any_promoted = false
+            new_params = map(params) do P
+                P = CC.widenconst(P)
+                if P <: Number && !(P <: Tile)
+                    any_promoted = true
+                    Tile{P, Tuple{}}
+                else
+                    P
+                end
             end
+            any_promoted || return nothing
+            return Tuple{new_params...}
         end
-        any_promoted || return nothing
-        return Tuple{new_params...}
+        return nothing
     end
     return nothing
 end

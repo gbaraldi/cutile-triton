@@ -6,12 +6,9 @@ using Test
 using CUDA
 using cuTile
 import cuTile as ct
+using TileTriton
 
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-
-include(joinpath(@__DIR__, "triton_shim_module.jl"))
-import .TritonShim
+TileTriton.install_shim!()
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +47,7 @@ try
                         m = Module(Symbol("Test_", replace(file, "." => "_")))
                         Core.eval(m, :(using Test, CUDA, cuTile))
                         Core.eval(m, :(import cuTile as ct))
-                        Core.eval(m, :(import Main: TritonShim))
+                        Core.eval(m, :(import TileTriton: TritonShim))
                         # @filecheck FileCheck-verifies native Tile IR text —
                         # inapplicable to this backend. Neutralize to `true`
                         # (report these as skipped-by-stub, not as passes of
@@ -71,7 +68,7 @@ try
             # cached CuModules belong to the old context, so drop them too
             try
                 CUDA.device_reset!()
-                empty!(TritonShim.KERNEL_CACHE)
+                empty!(TileTriton.TritonShim.KERNEL_CACHE)
             catch
             end
         end

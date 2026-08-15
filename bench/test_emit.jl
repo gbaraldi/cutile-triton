@@ -1,6 +1,5 @@
 # Emit TTIR for the three coverage kernels and write .ttir files.
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-using .TritonEmitter
+using TileTriton.TritonEmitter
 import cuTile as ct
 
 function vadd(a, b, c, tile::Int)

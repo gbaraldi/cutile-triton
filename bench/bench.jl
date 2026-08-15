@@ -1,8 +1,7 @@
 # Benchmark: cuTile kernels via (a) native tileiras, (b) Julia→TTIR→triton,
 # (c) Python→triton (same tile configs), plus CUDA.jl broadcast / cuBLAS.
-include(joinpath(@__DIR__, "TritonEmitter.jl"))
-include(joinpath(@__DIR__, "TritonRun.jl"))
-using .TritonEmitter, .TritonRun
+using TileTriton
+using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA
 using LinearAlgebra
 using Statistics

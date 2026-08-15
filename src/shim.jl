@@ -97,7 +97,17 @@ end
 
 end # module TritonShim
 
-# Route all cuTile compilation through the shim.
-@eval cuTile function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{}; kwargs...)
-    return Main.TritonShim.get_kernel(f, tt)
+
+
+"""
+    install_shim!()
+
+Route ALL cuTile compilation through the Triton backend by overwriting
+`cuTile.cufunction` (deliberate, opt-in piracy — the whole point of the shim).
+"""
+function install_shim!()
+    @eval TritonShim.ct function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{}; kwargs...)
+        return $(TritonShim).get_kernel(f, tt)
+    end
+    return nothing
 end
