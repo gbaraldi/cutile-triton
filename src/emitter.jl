@@ -1581,6 +1581,10 @@ function emit_if!(cg::CG, op::IfOp, @nospecialize(typ))
     return out
 end
 
+"Scalar-constant loop carries become real carries; tokens stay dropped."
+materialize_carry(@nospecialize(r)) =
+    r isa Number ? materialize(r, scalar_type(typeof(r))) : r
+
 function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
     i32 = IR.Type(Int32)
     lb = let r = resolve(cg, op.lower); r isa IR.Value ? r : const_i32(Int(r)) end
@@ -1589,7 +1593,7 @@ function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
 
     # Tokens (dropped in this backend) may be loop-carried; filter them out
     # of the scf carries and bind their block args to `nothing`.
-    rinit = Any[resolve(cg, x) for x in op.init_values]
+    rinit = Any[materialize_carry(resolve(cg, x)) for x in op.init_values]
     keep = Bool[r isa IR.Value || r isa TF32Val for r in rinit]
     inits = IR.Value[asvalue(r) for r in rinit[keep]]
     init_types = IR.Type[IR.type(v) for v in inits]
@@ -1613,7 +1617,7 @@ end
 
 function emit_while!(cg::CG, op::WhileOp, @nospecialize(typ))
     # Token carries are dropped (see emit_for!).
-    rinit = Any[resolve(cg, x) for x in op.init_values]
+    rinit = Any[materialize_carry(resolve(cg, x)) for x in op.init_values]
     keep = Bool[r isa IR.Value || r isa TF32Val for r in rinit]
     inits = IR.Value[asvalue(r) for r in rinit[keep]]
     init_types = IR.Type[IR.type(v) for v in inits]
@@ -1632,7 +1636,7 @@ function emit_while!(cg::CG, op::WhileOp, @nospecialize(typ))
         walk_block!(cg, op.before)
         term = op.before.terminator::ConditionOp
         cond = asvalue(resolve(cg, term.condition))
-        rargs = Any[resolve(cg, x) for x in term.args]
+        rargs = Any[materialize_carry(resolve(cg, x)) for x in term.args]
         ckeep = Bool[r isa IR.Value || r isa TF32Val for r in rargs]
         cargs = IR.Value[asvalue(r) for r in rargs[ckeep]]
         res_types = IR.Type[IR.type(v) for v in cargs]
