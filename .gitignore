@@ -4,3 +4,9 @@ venv/
 
 # scratch
 *.tmp
+
+# machine-specific (e.g. CUDA_Runtime_jll version pin for the cluster)
+LocalPreferences.toml
+
+# serialized benchmark matrices (see bench/spmm_flow.jl header)
+bench/data/
