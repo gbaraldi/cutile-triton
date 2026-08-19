@@ -22,4 +22,4 @@ TileTritonAMDGPUExt = "AMDGPU"
 
 [compat]
 julia = "1.11"
-cuTile = "0.3.2"
+cuTile = "0.3.2, 1"

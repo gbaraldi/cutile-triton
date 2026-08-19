@@ -7,10 +7,10 @@ using LinearAlgebra
 using Statistics
 import cuTile as ct
 
-const Spec1 = typeof(ct.ArraySpec{1}(128, true, (1,), (0,)))
-const Spec2 = typeof(ct.ArraySpec{2}(128, true, (1, 0), (0, 0)))
-TA1(T) = ct.TileArray{T, 1, Spec1}
-TA2(T) = ct.TileArray{T, 2, Spec2}
+const Spec1 = ct.ArraySpec{1}(128, true, (1,), (0,))
+const Spec2 = ct.ArraySpec{2}(128, true, (1, 0), (0, 0))
+TA1(T) = ct.TileArray{T, 1, Int32, Spec1}
+TA2(T) = ct.TileArray{T, 2, Int32, Spec2}
 
 function timeit(f; warmup=3, iters=50)
     for _ in 1:warmup; f(); end

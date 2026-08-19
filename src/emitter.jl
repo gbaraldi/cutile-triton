@@ -729,8 +729,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         sizes = resolve(cg, args[3])
         strides = resolve(cg, args[4])
         elty = eltype(TA)
-        spec = TA.parameters[3]
-        contig = (spec isa DataType ? spec : typeof(spec)).parameters[3]::Bool
+        contig = _spec_type(TA).parameters[3]::Bool
         return ViewInfo(asvalue(ptr), Any[sizes...], Any[strides...], elty,
                         nothing, :undetermined, contig, nothing, nothing)
     elseif f === :make_partition_view
@@ -1559,9 +1558,19 @@ _divattr(v) = (EMIT_DIV_ATTRS[] && v >= 2) ?
     IR.Attribute(Dict("tt.divisibility" => IR.Attribute(Int32(v)))) :
     IR.Attribute(Dict{String,IR.Attribute}())
 
+# Locate the ArraySpec parameter of a TileArray type. cuTile ≤0.3 stores the
+# spec *type* in parameter 3; cuTile 1.0 stores the spec *instance* in
+# parameter 4 (parameter 3 became the index type I).
+function _spec_type(@nospecialize(T))
+    for spec in T.parameters
+        S = spec isa DataType ? spec : typeof(spec)
+        S <: ct.ArraySpec && return S
+    end
+    error("TileArray type $T carries no ArraySpec parameter")
+end
+
 function _spec_params(@nospecialize(T))
-    spec = T.parameters[3]
-    P = (spec isa DataType ? spec : typeof(spec)).parameters
+    P = _spec_type(T).parameters
     # (N, Alignment, Contiguous, StrideDivBy, ShapeDivBy)
     return Int(P[2]), P[3]::Bool, P[4], P[5]
 end

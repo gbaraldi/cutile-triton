@@ -12,13 +12,13 @@ println("    device: ", dev)
 println("[2] use_rocm!")
 TileTriton.use_rocm!()
 
-const S1 = typeof(ct.ArraySpec{1}(128, true, (1,), (16,)))
+const S1 = ct.ArraySpec{1}(128, true, (1,), (16,))
 function vadd(a, b, c, tile::Int)
     bid = ct.bid(1)
     ct.store(c; index=bid, tile=ct.load(a; index=bid, shape=(tile,)) + ct.load(b; index=bid, shape=(tile,)))
     return
 end
-TA = ct.TileArray{Float32,1,S1}
+TA = ct.TileArray{Float32, 1, Int32, S1}
 tt = Tuple{TA, TA, TA, ct.Constant{Int, 1024}}
 
 println("[3] emit")

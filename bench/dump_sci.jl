@@ -37,10 +37,10 @@ function matmul(A, B, C, tm::Int, tn::Int, tk::Int)
     return nothing
 end
 
-const Spec1 = typeof(ct.ArraySpec{1}(128, true, (1,), (0,)))
-const Spec2 = typeof(ct.ArraySpec{2}(128, true, (1, 0), (0, 0)))
-const TA1 = ct.TileArray{Float32, 1, Spec1}
-const TA2 = ct.TileArray{Float32, 2, Spec2}
+const Spec1 = ct.ArraySpec{1}(128, true, (1,), (0,))
+const Spec2 = ct.ArraySpec{2}(128, true, (1, 0), (0, 0))
+const TA1 = ct.TileArray{Float32, 1, Int32, Spec1}
+const TA2 = ct.TileArray{Float32, 2, Int32, Spec2}
 
 function dump(name, f, argtypes)
     println("="^70)
