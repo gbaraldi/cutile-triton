@@ -4,8 +4,8 @@ using TileTriton.TritonEmitter, TileTriton.TritonRun
 using CUDA, LinearAlgebra, Statistics
 import cuTile as ct
 
-const Spec2 = typeof(ct.ArraySpec{2}(128, true, (1, 0), (0, 0)))
-TA2(T) = ct.TileArray{T, 2, Spec2}
+const Spec2 = ct.ArraySpec{2}(128, true, (1, 0), (0, 0))
+TA2(T) = ct.TileArray{T, 2, Int32, Spec2}
 
 function matmul16(A, B, C, tm::Int, tn::Int, tk::Int)
     bid_m = ct.bid(1)
