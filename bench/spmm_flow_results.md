@@ -170,10 +170,92 @@ kernels; that manufactured a spurious "slower at large n" effect and
 | KA 2pr pm[nb=4 t] | 122 (1.35 ms) | 43 (30.34 ms) | 30 (177.50 ms) |
 | KA 2pr pm[nb=8 t] | **250 (0.66 ms)** | 80 (16.27 ms) | 59 (88.86 ms) |
 
+## Follow-up 1: why KA 2pr pm beats cuTile 2pr pm — tile/num_warps sweep (job 7985)
+
+`zoo_tile_candidates` was widened to tile_n ∈ {8, 16, 64} and
+num_warps ∈ {4, 8}, with `TRITON_KERNEL_INFO=1` printing registers and
+spills per compiled kernel.
+
+- **Register pressure is not the cause**: every 2pr pm config compiles to
+  12–64 registers, JDS to ≤128, all with zero spills.
+- **Tile shape is part of it.** Narrow slabs at 8 warps win everywhere:
+
+  | β = 0, GFLOP/s | n=8 | n=64 | n=256 |
+  |---|---:|---:|---:|
+  | cuTile 2pr pm, 32×64 @4 warps (old best) | 385 | 355 | 352 |
+  | cuTile 2pr pm, 32×16 @8 warps | 385 | **410** | **411** |
+  | cuTile 2pr pm t, 32×64 @8 warps | 392 | **433** | 346 |
+  | KA 2pr pm | 433 | 440 | 441 |
+  | cuTile jds pm, 32×8 @8 warps | 166 | 167 | 167 |
+  | cuTile jds pm t, 32×64 @8 warps | 244 | 298 | 277 |
+  | KA jds pm | 352 | 357 | 358 |
+
+  The 2pr gap to KA shrinks from ~20% to ~7% (a tie at n=64 transposed);
+  JDS gains 45% standard / 70% transposed but KA jds pm stays 1.2× ahead.
+- **What the remaining gap is**: per-element index arithmetic and bounds
+  masks of the 2-D gathers, plus the layout conversions Triton inserts
+  for the reshape/broadcast of the id tiles — most configs carry 1–16 KB
+  of shared memory for exactly those `convert_layout` round trips. The KA
+  kernel does one index computation per element and nothing else.
+
+## Follow-up 2: cuTile native (tileiras) vs TileTriton on the same kernels (job 7990)
+
+`bench/spmm_backends.jl` launches the same kernel functions through
+`cuTile.launch` with `CUTILE_BACKEND=native` (Tile IR → tileiras 13.3.36)
+and `triton` (TileTriton's shim replacing `cuTile.cufunction`), on the
+flow matrix, β = 0, a few fixed configs at 4 warps. Native Tile IR on the
+L40S (sm_89) needs bytecode ≥ 13.2, i.e. a CUDA ≥ 13.2 toolchain: the
+runtime preference was moved from 13.1 to 13.3 (runs on the 13.1 driver
+via CUDA minor-version compatibility).
+
+| case | kernel (config) | native | triton | triton / native |
+|---|---|---:|---:|---:|
+| A n=8 | csr 8×8×16 | 133 | 170 | 1.28× |
+| A n=8 | csr 16×8×4 | 167 | 161 | 0.96× |
+| A n=8 | jds pm 32×8 | 170 | 157 | 0.92× |
+| A n=64 | csr 8×64×8 | 115 | 182 | 1.58× |
+| A n=64 | csr 8×64×4 | 106 | 165 | 1.56× |
+| A n=64 | jds pm 32×64 | 66 | 114 | 1.72× |
+| A n=64 | jds pm 32×16 | 154 | 153 | 0.99× |
+| A n=256 | csr 8×64×8 | 116 | 182 | 1.56× |
+| A n=256 | csr 8×64×4 | 107 | 166 | 1.55× |
+| A n=256 | jds pm 32×64 | 67 | 115 | 1.72× |
+| A n=256 | jds pm 32×16 | 155 | 153 | 0.99× |
+| Aᵀ n=8 | csr 8×8×16 | 74 | 102 | 1.38× |
+| Aᵀ n=8 | csr 16×8×4 | 136 | 287 | 2.11× |
+| Aᵀ n=8 | 2pr pm 32×8 | 389 | 384 | 0.99× |
+| Aᵀ n=64 | csr 8×64×8 | 137 | 164 | 1.20× |
+| Aᵀ n=64 | csr 8×64×4 | 124 | 245 | 1.98× |
+| Aᵀ n=64 | 2pr pm 32×64 | 141 | 273 | 1.93× |
+| Aᵀ n=64 | 2pr pm 32×16 | 304 | 396 | 1.30× |
+| Aᵀ n=256 | csr 8×64×8 | 137 | 164 | 1.20× |
+| Aᵀ n=256 | csr 8×64×4 | 124 | 245 | 1.98× |
+| Aᵀ n=256 | 2pr pm 32×64 | 141 | 274 | 1.94× |
+| Aᵀ n=256 | 2pr pm 32×16 | 305 | 397 | 1.30× |
+
+(GFLOP/s; both backends verified against the same reference on every row.)
+
+- **TileTriton is ahead or tied on every config but two**, and the two
+  native wins are within 4–8% at n=8. The advantage grows with slab width
+  and with gather waste: 1.5–1.7× on the wide 8×64 / 32×64 tiles of A,
+  up to 2.1× on Aᵀ's CSR tiles where most gather lanes are masked.
+- **tileiras handles wide gathered slabs poorly**: native 2pr pm drops
+  from 389 (32×8) to 141 (32×64) while Triton holds 273–385; native jds
+  pm 32×64 is 2.3× slower than its own 32×16. Both backends prefer the
+  narrow slab, and on the narrow slabs they converge (jds pm 32×16:
+  154 vs 153; 2pr pm 32×8: 389 vs 384).
+- Caveat: the shim path is not bit-identical to the explicit `TritonRun`
+  path used by `spmm_flow.jl` — it takes cuTile's default `ArraySpec`
+  (weaker stride/alignment hints) and its own autotune candidates. The
+  same 2pr pm 32×64 config measures 273 here vs 355 there, so the
+  explicit path's numbers are the better TileTriton figures; the table
+  above is the like-for-like comparison.
+
 ## Reproducing
 
 ```
 julia --project=. bench/spmm_flow.jl 8 64 256          # needs bench/data/*.jls
+CUTILE_BACKEND=native julia --project=. bench/spmm_backends.jl 8 64 256  # then triton
 python3 bench/spmm_flow_tables.py ~/spmm-flow-<job>.log  # the tables above
 ```
 
