@@ -21,10 +21,7 @@
 import cuTile as ct
 using TileTriton: TritonRun
 
-const SPMM_SPEC1 = ct.ArraySpec{1}(128, true, (1,), (0,))
-const SPMM_SPEC2 = ct.ArraySpec{2}(128, true, (1, 0), (0, 0))
-spmm_ta1(T) = ct.TileArray{T, 1, Int32, SPMM_SPEC1}
-spmm_ta2(T) = ct.TileArray{T, 2, Int32, SPMM_SPEC2}
+include(joinpath(@__DIR__, "spmm_specs.jl"))
 
 function spmm_csr_row_kernel(C::ct.TileArray{T, 2},
                              rowptr::ct.TileArray{Int32, 1},
@@ -126,7 +123,19 @@ function build_spmm(::Type{T}; tile_m::Int, tile_n::Int, tile_k::Int,
                   ct.Constant{Bool, beta_nz}};
             name="spmm_csr_rows", num_warps=4)
         return (C, rp, cv, nz, B, α, β) ->
-            TritonRun.launch!(k, (cld(size(C, 1), tile_m), cld(size(C, 2), tile_n)),
+            TritonRun.launch!(k, spmm_grid(C, tile_m, tile_n),
                               C, rp, cv, nz, B, T(α), T(β))
     end
+end
+
+# Candidate (tile_m, tile_n, tile_k) configs; tile_m == 1 is the
+# row-per-program kernel. Register footprint capped at 4096 gathered
+# B elements per program.
+function csr_tile_candidates(n)
+    tn = clamp(nextpow(2, n), 4, 64)
+    cands = [(1, tn, 32), (1, tn, 64)]
+    for tm in (8, 32), tk in (16, 32)
+        tm * tn * tk <= 4096 && push!(cands, (tm, tn, tk))
+    end
+    return cands
 end

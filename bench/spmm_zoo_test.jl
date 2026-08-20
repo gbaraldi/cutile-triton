@@ -12,8 +12,8 @@ import cuTile as ct
 include(joinpath(@__DIR__, "spmm_zoo_kernels.jl"))
 
 const T = Float32
-rng = MersenneTwister(7)
-rtol = sqrt(eps(T)) * 100
+const m, k, n = 1003, 517, 37
+const rtol = sqrt(eps(T)) * 100
 
 function check(name, Cd, Cref)
     ok = isapprox(Array(Cd), Cref; rtol)
@@ -22,15 +22,25 @@ function check(name, Cd, Cref)
     return ok
 end
 
-allok = true
+"Build the β=0 and general-α/β specializations of one kernel via
+`build(beta_nz)`, run both through `launch(spmm!, C, α, β)`, check both."
+function run_pair(name, build, launch, Cd, Aref, Bh, C0h, α, β)
+    Cref = Aref * Bh
+    spmm! = build(false)
+    fill!(Cd, T(NaN))
+    launch(spmm!, Cd, 1, 0)
+    ok = check("$name β=0", Cd, Cref)
+    spmm_ab! = build(true)
+    copyto!(Cd, C0h)
+    launch(spmm_ab!, Cd, α, β)
+    return ok & check("$name αβ", Cd, α .* Cref .+ β .* C0h)
+end
 
 # --- Matrix2PerRow{PM}: 2×m colidx, 0 = absent ------------------------------
-let m = 1003, k = 517, n = 37
-    global allok
+function test_2pr(rng)
     colidx = zeros(Int32, 2, m)
-    for i in 1:m
-        rand(rng, Bool) && (colidx[1, i] = rand(rng, 1:k))
-        rand(rng, Bool) && (colidx[2, i] = rand(rng, 1:k))
+    for i in 1:m, s in 1:2
+        rand(rng, Bool) && (colidx[s, i] = rand(rng, 1:k))
     end
     vals = randn(rng, T, 2, m)
     I, J, Vpm, Vv = Int32[], Int32[], T[], T[]
@@ -46,41 +56,30 @@ let m = 1003, k = 517, n = 37
     Bh = rand(rng, T, k, n)
     C0h = rand(rng, T, m, n)
     α, β = T(2.5), T(-0.5)
-    dcol = CuArray(vec(colidx))
-    dvals = CuArray(vec(vals))
+    dcol = CuArray(colidx)
+    dvals = CuArray(vals)
     Bd = CuArray(Bh)
     Cd = CuArray{T}(undef, m, n)
 
-    spmm! = build_spmm_2pr(T; tile_m=32, tile_n=16, pm=true, beta_nz=false)
-    fill!(Cd, T(NaN))
-    spmm!(Cd, dcol, Bd, 1, 0)
-    allok &= check("2pr pm β=0", Cd, Apm * Bh)
-    spmm_ab! = build_spmm_2pr(T; tile_m=32, tile_n=16, pm=true, beta_nz=true)
-    copyto!(Cd, C0h)
-    spmm_ab!(Cd, dcol, Bd, α, β)
-    allok &= check("2pr pm αβ", Cd, α .* (Apm * Bh) .+ β .* C0h)
-
-    spmm! = build_spmm_2pr(T; tile_m=64, tile_n=8, pm=false, beta_nz=false)
-    fill!(Cd, T(NaN))
-    spmm!(Cd, dcol, dvals, Bd, 1, 0)
-    allok &= check("2pr vals β=0", Cd, Av * Bh)
-    spmm_ab! = build_spmm_2pr(T; tile_m=64, tile_n=8, pm=false, beta_nz=true)
-    copyto!(Cd, C0h)
-    spmm_ab!(Cd, dcol, dvals, Bd, α, β)
-    allok &= check("2pr vals αβ", Cd, α .* (Av * Bh) .+ β .* C0h)
+    ok = run_pair("2pr pm",
+                  bnz -> build_spmm_2pr(T; tile_m=32, tile_n=16, pm=true, beta_nz=bnz),
+                  (f!, C, α, β) -> f!(C, dcol, Bd, α, β),
+                  Cd, Apm, Bh, C0h, α, β)
+    ok & run_pair("2pr vals",
+                  bnz -> build_spmm_2pr(T; tile_m=64, tile_n=8, pm=false, beta_nz=bnz),
+                  (f!, C, α, β) -> f!(C, dcol, dvals, Bd, α, β),
+                  Cd, Av, Bh, C0h, α, β)
 end
 
 # --- JDSMatrix{PM}: rows sorted by decreasing length ------------------------
-let m = 1003, k = 517, n = 37
-    global allok
+function test_jds(rng)
     rowlens = sort!(rand(rng, 0:9, m); rev=true)
     maxlen = rowlens[1]
     colidx = Int32[]
     nzval = T[]
     iterptr = Int32[1]
     for j in 1:maxlen
-        cnt = count(>=(j), rowlens)
-        for _ in 1:cnt
+        for _ in 1:count(>=(j), rowlens)
             push!(colidx, rand(rng, Bool) ? rand(rng, 1:k) : -rand(rng, 1:k))
             push!(nzval, randn(rng, T))
         end
@@ -91,7 +90,7 @@ let m = 1003, k = 517, n = 37
         ptr = iterptr[j] + i - 1
         kk = colidx[ptr]
         push!(I, i); push!(J, abs(kk))
-        push!(Vpm, kk < 0 ? -one(T) : one(T))
+        push!(Vpm, flipsign(one(T), kk))
         push!(Vv, nzval[ptr])
     end
     Apm = sparse(I, J, Vpm, m, k)
@@ -100,30 +99,23 @@ let m = 1003, k = 517, n = 37
     C0h = rand(rng, T, m, n)
     α, β = T(2.5), T(-0.5)
     dcol = CuArray(colidx)
-    dnz = CuArray(nzval)
-    diter = CuArray(push!(copy(iterptr), iterptr[end]))   # trailing sentinel
     dcol_abs = CuArray(abs.(colidx))
+    dnz = CuArray(nzval)
+    diter = CuArray(iterptr)
     Bd = CuArray(Bh)
     Cd = CuArray{T}(undef, m, n)
 
-    spmm! = build_spmm_jds(T; tile_m=32, tile_n=16, pm=true, beta_nz=false)
-    fill!(Cd, T(NaN))
-    spmm!(Cd, dcol, diter, Bd, 1, 0)
-    allok &= check("jds pm β=0", Cd, Apm * Bh)
-    spmm_ab! = build_spmm_jds(T; tile_m=32, tile_n=16, pm=true, beta_nz=true)
-    copyto!(Cd, C0h)
-    spmm_ab!(Cd, dcol, diter, Bd, α, β)
-    allok &= check("jds pm αβ", Cd, α .* (Apm * Bh) .+ β .* C0h)
-
-    spmm! = build_spmm_jds(T; tile_m=64, tile_n=8, pm=false, beta_nz=false)
-    fill!(Cd, T(NaN))
-    spmm!(Cd, dcol_abs, diter, dnz, Bd, 1, 0)
-    allok &= check("jds vals β=0", Cd, Av * Bh)
-    spmm_ab! = build_spmm_jds(T; tile_m=64, tile_n=8, pm=false, beta_nz=true)
-    copyto!(Cd, C0h)
-    spmm_ab!(Cd, dcol_abs, diter, dnz, Bd, α, β)
-    allok &= check("jds vals αβ", Cd, α .* (Av * Bh) .+ β .* C0h)
+    ok = run_pair("jds pm",
+                  bnz -> build_spmm_jds(T; tile_m=32, tile_n=16, pm=true, beta_nz=bnz),
+                  (f!, C, α, β) -> f!(C, dcol, diter, Bd, α, β),
+                  Cd, Apm, Bh, C0h, α, β)
+    ok & run_pair("jds vals",
+                  bnz -> build_spmm_jds(T; tile_m=64, tile_n=8, pm=false, beta_nz=bnz),
+                  (f!, C, α, β) -> f!(C, dcol_abs, diter, dnz, Bd, α, β),
+                  Cd, Av, Bh, C0h, α, β)
 end
 
+rng = MersenneTwister(7)
+allok = test_2pr(rng) & test_jds(rng)
 println(allok ? "ZOO TEST OK" : "ZOO TEST FAILED")
 exit(allok ? 0 : 1)
