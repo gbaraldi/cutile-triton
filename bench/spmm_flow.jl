@@ -12,68 +12,114 @@
 # Needs bench/data/flow_TX{,_t,_zoo}.jls, serialized by the export script
 # (SparseMatrixCSC{Float32,Int32} of A and Aᵀ plus the raw JDSMatrixPM /
 # Matrix2PerRowPM arrays from MinimumCostFlows).
+# The zoo kernels (cuTile and KA) run in the standard layout and a fully
+# transposed one — B as n×k and C as n×m, rhs columns contiguous (labels
+# "… t"); the KA kernels additionally sweep NB rhs columns per thread
+# (labels "[nb=…]").
 # Environment knobs as in bench/spmm_csr.jl: SPMM_BACKEND, SPMM_TYPE
 # (default Float32 here, matching CoolPDLP).
 
 using LinearAlgebra, SparseArrays, Random, Printf, Serialization
+using SIMD
 
 include(joinpath(@__DIR__, "spmm_common.jl"))
 include(joinpath(@__DIR__, "spmm_csr_kernels.jl"))
 include(joinpath(@__DIR__, "spmm_zoo_kernels.jl"))
 
-# --- KA baselines: SpMM versions of the matrix_zoo kernels (one thread per
-# --- (row, rhs column)); the csr baseline comes from spmm_common.jl ---------
+# --- KA baselines: SpMM versions of the matrix_zoo kernels; the csr baseline
+# --- comes from spmm_common.jl.
+#
+# Each thread covers one row × NB rhs columns with a SIMD.Vec accumulator, so
+# colidx/vals are read once per NB columns instead of once per column — at
+# nb=1 (the original one-thread-per-element shape) that n-fold redundant
+# metadata traffic is what makes the vals variants ~2× slower than pm
+# (spmm_flow_results.md). On the GPU NVPTX scalarizes the Vec arithmetic, so
+# this matches hand-unrolled tuples; with the transposed-B layout (BT: b is
+# n×k, the NB columns contiguous) the lanes of nb_load can fuse into real
+# vector loads.
 
-@kernel function spmm_jds_pm_ka!(c, colidx, iterptr, b, α, β)
-    i, batch_idx = @index(Global, NTuple)
+"NB-column block of B at column id `col` as a SIMD vector; `BT` picks the
+b[n×k] transposed layout. A top-level function so the ntuple closure captures
+only arguments — a captured reassigned kernel local would be boxed, which GPU
+compilation can't take."
+@inline nb_load(b, col, b0, ::Val{NB}, ::Val{true}) where {NB} =
+    Vec(ntuple(q -> @inbounds(b[b0 + q, col]), Val(NB)))
+@inline nb_load(b, col, b0, ::Val{NB}, ::Val{false}) where {NB} =
+    Vec(ntuple(q -> @inbounds(b[col, b0 + q]), Val(NB)))
+
+"α/β-update row i, columns b0+1:b0+NB of C with the accumulator lanes
+(column i of the transposed n×m C when `BT`)."
+@inline function nb_store!(c, s::Vec{NB}, i, b0, α, β, ::Val{BT}) where {NB, BT}
+    @inbounds for q in 1:NB
+        if BT
+            c[b0 + q, i] = α * s[q] + β * c[b0 + q, i]
+        else
+            c[i, b0 + q] = α * s[q] + β * c[i, b0 + q]
+        end
+    end
+end
+
+@kernel function spmm_jds_pm_ka!(c, colidx, iterptr, b, α, β,
+                                 ::Val{NB}, ::Val{BT}) where {NB, BT}
+    i, blk = @index(Global, NTuple)
+    b0 = (blk - 1) * NB
+    T = eltype(c)
     @inbounds begin
-        s = zero(eltype(c))
+        s = zero(Vec{NB, T})
         j = 1
         ptr = i
         while j < length(iterptr) && ptr < iterptr[j + 1]
             k = colidx[ptr]
-            s += flipsign(b[abs(k), batch_idx], k)
+            s = muladd(flipsign(one(T), k),
+                       nb_load(b, abs(k), b0, Val(NB), Val(BT)), s)
             ptr = i + iterptr[j += 1] - 1
         end
-        c[i, batch_idx] = α * s + β * c[i, batch_idx]
+        nb_store!(c, s, i, b0, α, β, Val(BT))
     end
 end
 
-@kernel function spmm_jds_ka!(c, colidx, iterptr, vals, b, α, β)
-    i, batch_idx = @index(Global, NTuple)
+@kernel function spmm_jds_ka!(c, colidx, iterptr, vals, b, α, β,
+                              ::Val{NB}, ::Val{BT}) where {NB, BT}
+    i, blk = @index(Global, NTuple)
+    b0 = (blk - 1) * NB
     @inbounds begin
-        s = zero(eltype(c))
+        s = zero(Vec{NB, eltype(c)})
         j = 1
         ptr = i
         while j < length(iterptr) && ptr < iterptr[j + 1]
-            s += vals[ptr] * b[colidx[ptr], batch_idx]
+            s = muladd(vals[ptr],
+                       nb_load(b, colidx[ptr], b0, Val(NB), Val(BT)), s)
             ptr = i + iterptr[j += 1] - 1
         end
-        c[i, batch_idx] = α * s + β * c[i, batch_idx]
+        nb_store!(c, s, i, b0, α, β, Val(BT))
     end
 end
 
-@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β)
-    i, batch_idx = @index(Global, NTuple)
+@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β,
+                                 ::Val{NB}, ::Val{BT}) where {NB, BT}
+    i, blk = @index(Global, NTuple)
+    b0 = (blk - 1) * NB
     @inbounds begin
-        s = zero(eltype(c))
-        j = colidx[1, i]
-        j > 0 && (s += b[j, batch_idx])
-        j = colidx[2, i]
-        j > 0 && (s -= b[j, batch_idx])
-        c[i, batch_idx] = α * s + β * c[i, batch_idx]
+        s = zero(Vec{NB, eltype(c)})
+        j1 = colidx[1, i]
+        j1 > 0 && (s += nb_load(b, j1, b0, Val(NB), Val(BT)))
+        j2 = colidx[2, i]
+        j2 > 0 && (s -= nb_load(b, j2, b0, Val(NB), Val(BT)))
+        nb_store!(c, s, i, b0, α, β, Val(BT))
     end
 end
 
-@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β)
-    i, batch_idx = @index(Global, NTuple)
+@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β,
+                              ::Val{NB}, ::Val{BT}) where {NB, BT}
+    i, blk = @index(Global, NTuple)
+    b0 = (blk - 1) * NB
     @inbounds begin
-        s = zero(eltype(c))
-        j = colidx[1, i]
-        j > 0 && (s += vals[1, i] * b[j, batch_idx])
-        j = colidx[2, i]
-        j > 0 && (s += vals[2, i] * b[j, batch_idx])
-        c[i, batch_idx] = α * s + β * c[i, batch_idx]
+        s = zero(Vec{NB, eltype(c)})
+        j1 = colidx[1, i]
+        j1 > 0 && (s = muladd(vals[1, i], nb_load(b, j1, b0, Val(NB), Val(BT)), s))
+        j2 = colidx[2, i]
+        j2 > 0 && (s = muladd(vals[2, i], nb_load(b, j2, b0, Val(NB), Val(BT)), s))
+        nb_store!(c, s, i, b0, α, β, Val(BT))
     end
 end
 
@@ -185,91 +231,117 @@ function main()
             case = "flow $mat n=$n $T"
             flops = 2.0 * nnz(Amat) * n
             Bh = rand(rng, T, kk, n)
-            Bd = GPUArr(Bh)
-            # references live on the device: checks then run there instead of
-            # downloading the full C per candidate
-            C0 = GPUArr(rand(rng, T, mm, n))
-            Cref = GPUArr(Amat * Bh)
-            Cref2 = α2 .* Cref .+ β2 .* C0
-            Cd = GPUArr{T}(undef, mm, n)
-            ctx = (; T, Cref, Cref2, C0, rtol)
+            C0h = rand(rng, T, mm, n)
+            Crefh = Amat * Bh
 
-            # cuTile CSR
-            bench_cutile(case, "csr", flops, Cd, ctx, α2, β2;
-                cands=csr_tile_candidates(n),
-                build=((tm, tn, tk), bnz) -> build_spmm(T; tile_m=tm, tile_n=tn,
-                                                        tile_k=tk, beta_nz=bnz),
-                launch=(f!, C, α, β) -> f!(C, csr.rowptr, csr.colval, csr.nzval,
-                                           Bd, α, β))
+            # Standard layout, then the fully transposed one (B as n×kk, C as
+            # n×mm — rhs columns contiguous; labels "… t"). Device arrays are
+            # rebuilt per layout to bound device memory; the references live
+            # on the device so checks run there instead of downloading the
+            # full C per candidate. csr/vendor baselines run standard-only.
+            for (bt, lay) in ((false, ""), (true, " t"))
+                Bx = GPUArr(bt ? permutedims(Bh) : Bh)
+                C0 = GPUArr(bt ? permutedims(C0h) : C0h)
+                Cref = GPUArr(bt ? permutedims(Crefh) : Crefh)
+                Cref2 = α2 .* Cref .+ β2 .* C0
+                Cd = similar(Cref)
+                ctx = (; T, Cref, Cref2, C0, rtol)
 
-            if mat == "A"
-                # cuTile JDS
-                bench_cutile(case, "jds pm", flops, Cd, ctx, α2, β2;
-                    cands=zoo_tile_candidates(n; per_row=1),
-                    build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm, tile_n=tn,
-                                                            pm=true, beta_nz=bnz),
-                    launch=(f!, C, α, β) -> f!(C, jds_col, jds_iter, Bd, α, β))
-                bench_cutile(case, "jds", flops, Cd, ctx, α2, β2;
-                    cands=zoo_tile_candidates(n; per_row=1),
-                    build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm, tile_n=tn,
-                                                            pm=false, beta_nz=bnz),
-                    launch=(f!, C, α, β) -> f!(C, jds_col_abs, jds_iter,
-                                               jds_nz, Bd, α, β))
-                # KA JDS baselines
-                jds_pm_ka! = spmm_jds_pm_ka!(KA.get_backend(Cd))
-                bench_impl(case, "KA jds pm", flops, Cd, ctx; init0=0,
-                    f0=C -> jds_pm_ka!(C, jds_col, jds_iter, Bd, T(1), T(0);
-                                       ndrange=(mm, n)),
-                    fab=C -> jds_pm_ka!(C, jds_col, jds_iter, Bd, α2, β2;
-                                        ndrange=(mm, n)))
-                jds_ka! = spmm_jds_ka!(KA.get_backend(Cd))
-                bench_impl(case, "KA jds", flops, Cd, ctx; init0=0,
-                    f0=C -> jds_ka!(C, jds_col_abs, jds_iter, jds_nz, Bd,
-                                    T(1), T(0); ndrange=(mm, n)))
-            else
-                # cuTile 2-per-row
-                bench_cutile(case, "2pr pm", flops, Cd, ctx, α2, β2;
-                    cands=zoo_tile_candidates(n; per_row=2),
-                    build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm, tile_n=tn,
-                                                            pm=true, beta_nz=bnz),
-                    launch=(f!, C, α, β) -> f!(C, tpr_col2, Bd, α, β))
-                bench_cutile(case, "2pr", flops, Cd, ctx, α2, β2;
-                    cands=zoo_tile_candidates(n; per_row=2),
-                    build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm, tile_n=tn,
-                                                            pm=false, beta_nz=bnz),
-                    launch=(f!, C, α, β) -> f!(C, tpr_col2, tpr_vals2, Bd, α, β))
-                # KA 2-per-row baselines
-                tpr_pm_ka! = spmm_2pr_pm_ka!(KA.get_backend(Cd))
-                bench_impl(case, "KA 2pr pm", flops, Cd, ctx; init0=0,
-                    f0=C -> tpr_pm_ka!(C, tpr_col2, Bd, T(1), T(0);
-                                       ndrange=(mm, n)),
-                    fab=C -> tpr_pm_ka!(C, tpr_col2, Bd, α2, β2;
-                                        ndrange=(mm, n)))
-                tpr_ka! = spmm_2pr_ka!(KA.get_backend(Cd))
-                bench_impl(case, "KA 2pr", flops, Cd, ctx; init0=0,
-                    f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bd, T(1), T(0);
-                                    ndrange=(mm, n)))
+                if !bt
+                    # cuTile CSR
+                    bench_cutile(case, "csr", flops, Cd, ctx, α2, β2;
+                        cands=csr_tile_candidates(n),
+                        build=((tm, tn, tk), bnz) -> build_spmm(T; tile_m=tm,
+                            tile_n=tn, tile_k=tk, beta_nz=bnz),
+                        launch=(f!, C, α, β) -> f!(C, csr.rowptr, csr.colval,
+                                                   csr.nzval, Bx, α, β))
+                end
+
+                if mat == "A"
+                    # cuTile JDS
+                    bench_cutile(case, "jds pm$lay", flops, Cd, ctx, α2, β2;
+                        cands=zoo_tile_candidates(n; per_row=1),
+                        build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm,
+                            tile_n=tn, pm=true, beta_nz=bnz, bt),
+                        launch=(f!, C, α, β) -> f!(C, jds_col, jds_iter, Bx, α, β))
+                    bench_cutile(case, "jds$lay", flops, Cd, ctx, α2, β2;
+                        cands=zoo_tile_candidates(n; per_row=1),
+                        build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm,
+                            tile_n=tn, pm=false, beta_nz=bnz, bt),
+                        launch=(f!, C, α, β) -> f!(C, jds_col_abs, jds_iter,
+                                                   jds_nz, Bx, α, β))
+                    # KA JDS baselines, swept over NB columns per thread
+                    jds_pm_ka! = spmm_jds_pm_ka!(KA.get_backend(Cd))
+                    jds_ka! = spmm_jds_ka!(KA.get_backend(Cd))
+                    for nb in (1, 4, 8)
+                        n % nb == 0 || continue
+                        grid = (mm, n ÷ nb)
+                        bench_impl(case, "KA jds pm[nb=$nb$lay]", flops, Cd, ctx;
+                            init0=0,
+                            f0=C -> jds_pm_ka!(C, jds_col, jds_iter, Bx, T(1),
+                                               T(0), Val(nb), Val(bt);
+                                               ndrange=grid),
+                            fab=C -> jds_pm_ka!(C, jds_col, jds_iter, Bx, α2, β2,
+                                                Val(nb), Val(bt); ndrange=grid))
+                        bench_impl(case, "KA jds[nb=$nb$lay]", flops, Cd, ctx;
+                            init0=0,
+                            f0=C -> jds_ka!(C, jds_col_abs, jds_iter, jds_nz, Bx,
+                                            T(1), T(0), Val(nb), Val(bt);
+                                            ndrange=grid))
+                    end
+                else
+                    # cuTile 2-per-row
+                    bench_cutile(case, "2pr pm$lay", flops, Cd, ctx, α2, β2;
+                        cands=zoo_tile_candidates(n; per_row=2),
+                        build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                            tile_n=tn, pm=true, beta_nz=bnz, bt),
+                        launch=(f!, C, α, β) -> f!(C, tpr_col2, Bx, α, β))
+                    bench_cutile(case, "2pr$lay", flops, Cd, ctx, α2, β2;
+                        cands=zoo_tile_candidates(n; per_row=2),
+                        build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                            tile_n=tn, pm=false, beta_nz=bnz, bt),
+                        launch=(f!, C, α, β) -> f!(C, tpr_col2, tpr_vals2, Bx, α, β))
+                    # KA 2-per-row baselines, swept over NB columns per thread
+                    tpr_pm_ka! = spmm_2pr_pm_ka!(KA.get_backend(Cd))
+                    tpr_ka! = spmm_2pr_ka!(KA.get_backend(Cd))
+                    for nb in (1, 4, 8)
+                        n % nb == 0 || continue
+                        grid = (mm, n ÷ nb)
+                        bench_impl(case, "KA 2pr pm[nb=$nb$lay]", flops, Cd, ctx;
+                            init0=0,
+                            f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0),
+                                               Val(nb), Val(bt); ndrange=grid),
+                            fab=C -> tpr_pm_ka!(C, tpr_col2, Bx, α2, β2, Val(nb),
+                                                Val(bt); ndrange=grid))
+                        bench_impl(case, "KA 2pr[nb=$nb$lay]", flops, Cd, ctx;
+                            init0=0,
+                            f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bx, T(1),
+                                            T(0), Val(nb), Val(bt); ndrange=grid))
+                    end
+                end
+
+                if !bt
+                    # KA CSR row-per-thread (CoolPDLP's spmm_csr!)
+                    csr_ka! = spmm_csr_ka!(KA.get_backend(Cd))
+                    bench_impl(case, "KA csr", flops, Cd, ctx; init0=0,
+                        f0=C -> csr_ka!(C, csr.rowptr, csr.colval, csr.nzval, Bx,
+                                        T(1), T(0); ndrange=(mm, n)))
+
+                    # vendor sparse library
+                    try
+                        Av = vendor_csr(csr.rowptr, csr.colval, csr.nzval, mm, kk)
+                        bench_impl(case, VENDOR_NAME, flops, Cd, ctx; init0=0,
+                            f0=C -> mul!(C, Av, Bx, one(T), zero(T)),
+                            fab=C -> mul!(C, Av, Bx, α2, β2))
+                    catch err
+                        fail_row(case, VENDOR_NAME, err)
+                    end
+                end
+
+                Bx = Cd = C0 = Cref = Cref2 = ctx = nothing
+                GC.gc()
+                BACKEND == "cuda" && CUDA.reclaim()
             end
-
-            # KA CSR row-per-thread (CoolPDLP's spmm_csr!)
-            csr_ka! = spmm_csr_ka!(KA.get_backend(Cd))
-            bench_impl(case, "KA csr", flops, Cd, ctx; init0=0,
-                f0=C -> csr_ka!(C, csr.rowptr, csr.colval, csr.nzval, Bd,
-                                T(1), T(0); ndrange=(mm, n)))
-
-            # vendor sparse library
-            try
-                Av = vendor_csr(csr.rowptr, csr.colval, csr.nzval, mm, kk)
-                bench_impl(case, VENDOR_NAME, flops, Cd, ctx; init0=0,
-                    f0=C -> mul!(C, Av, Bd, one(T), zero(T)),
-                    fab=C -> mul!(C, Av, Bd, α2, β2))
-            catch err
-                fail_row(case, VENDOR_NAME, err)
-            end
-
-            Bd = Cd = C0 = Cref = Cref2 = ctx = nothing
-            GC.gc()
-            BACKEND == "cuda" && CUDA.reclaim()
         end
     end
     println("SPMM FLOW BENCH DONE ($BACKEND)")
