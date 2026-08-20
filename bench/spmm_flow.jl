@@ -265,13 +265,13 @@ function main()
                     # cuTile JDS
                     bench_cutile(case, "jds pm$lay", flops, Cd, ctx, α2, β2;
                         cands=zoo_tile_candidates(n; per_row=1),
-                        build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm,
-                            tile_n=tn, pm=true, beta_nz=bnz, bt),
+                        build=((tm, tn, nw), bnz) -> build_spmm_jds(T; tile_m=tm,
+                            tile_n=tn, pm=true, beta_nz=bnz, bt, num_warps=nw),
                         launch=(f!, C, α, β) -> f!(C, jds_col, jds_iter, Bx, α, β))
                     bench_cutile(case, "jds$lay", flops, Cd, ctx, α2, β2;
                         cands=zoo_tile_candidates(n; per_row=1),
-                        build=((tm, tn), bnz) -> build_spmm_jds(T; tile_m=tm,
-                            tile_n=tn, pm=false, beta_nz=bnz, bt),
+                        build=((tm, tn, nw), bnz) -> build_spmm_jds(T; tile_m=tm,
+                            tile_n=tn, pm=false, beta_nz=bnz, bt, num_warps=nw),
                         launch=(f!, C, α, β) -> f!(C, jds_col_abs, jds_iter,
                                                    jds_nz, Bx, α, β))
                     # KA JDS baselines, swept over NB columns per thread
@@ -296,13 +296,13 @@ function main()
                     # cuTile 2-per-row
                     bench_cutile(case, "2pr pm$lay", flops, Cd, ctx, α2, β2;
                         cands=zoo_tile_candidates(n; per_row=2),
-                        build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm,
-                            tile_n=tn, pm=true, beta_nz=bnz, bt),
+                        build=((tm, tn, nw), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                            tile_n=tn, pm=true, beta_nz=bnz, bt, num_warps=nw),
                         launch=(f!, C, α, β) -> f!(C, tpr_col2, Bx, α, β))
                     bench_cutile(case, "2pr$lay", flops, Cd, ctx, α2, β2;
                         cands=zoo_tile_candidates(n; per_row=2),
-                        build=((tm, tn), bnz) -> build_spmm_2pr(T; tile_m=tm,
-                            tile_n=tn, pm=false, beta_nz=bnz, bt),
+                        build=((tm, tn, nw), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                            tile_n=tn, pm=false, beta_nz=bnz, bt, num_warps=nw),
                         launch=(f!, C, α, β) -> f!(C, tpr_col2, tpr_vals2, Bx, α, β))
                     # KA 2-per-row baselines, swept over NB columns per thread
                     tpr_pm_ka! = spmm_2pr_pm_ka!(KA.get_backend(Cd))

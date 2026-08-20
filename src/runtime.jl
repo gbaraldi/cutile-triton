@@ -176,6 +176,13 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
     gss = pyconvert(Int, pygetattr(k.metadata, "global_scratch_size", 0))
     loadf = _load_module[] === nothing ? _cuda_load : _load_module[]
     mod, fun = loadf(bin, name, shared)
+    if haskey(ENV, "TRITON_KERNEL_INFO") && fun isa CUDA.CuFunction
+        # occupancy diagnostics: registers/thread and local (spill) bytes
+        attrs = CUDA.attributes(fun)
+        println("KERNEL\t$name\tnum_warps=$num_warps\tregs=",
+                attrs[CUDA.FUNC_ATTRIBUTE_NUM_REGS], "\tlocal=",
+                attrs[CUDA.FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES], "\tshared=$shared")
+    end
     return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir)
 end
 

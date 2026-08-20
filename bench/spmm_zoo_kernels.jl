@@ -192,14 +192,14 @@ n×k B layout). The launcher is
 2×m slot matrices.
 """
 function build_spmm_2pr(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
-                        beta_nz::Bool, bt::Bool=false) where {T}
+                        beta_nz::Bool, bt::Bool=false, num_warps::Int=4) where {T}
     consts = (ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
               ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
     grid = bt ? spmm_grid_t : spmm_grid
     if pm
         k = TritonRun.triton_kernel(spmm_2pr_pm_kernel,
             Tuple{spmm_ta2(T), spmm_ta2(Int32), spmm_ta2(T), T, T, consts...};
-            name="spmm_2pr_pm", num_warps=4)
+            name="spmm_2pr_pm", num_warps)
         return (C, colidx, B, α, β) ->
             TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, B, T(α), T(β))
@@ -207,7 +207,7 @@ function build_spmm_2pr(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
         k = TritonRun.triton_kernel(spmm_2pr_kernel,
             Tuple{spmm_ta2(T), spmm_ta2(Int32), spmm_ta2(T), spmm_ta2(T), T, T,
                   consts...};
-            name="spmm_2pr", num_warps=4)
+            name="spmm_2pr", num_warps)
         return (C, colidx, vals, B, α, β) ->
             TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, vals, B, T(α), T(β))
@@ -224,7 +224,7 @@ B layout). The launcher is
 jagged→output row map is the identity.
 """
 function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
-                        beta_nz::Bool, bt::Bool=false) where {T}
+                        beta_nz::Bool, bt::Bool=false, num_warps::Int=4) where {T}
     # runtime ndiag, then the compile-time tile constants
     tail = (Int32, ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
             ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
@@ -233,7 +233,7 @@ function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
         k = TritonRun.triton_kernel(spmm_jds_pm_kernel,
             Tuple{spmm_ta2(T), spmm_ta1(Int32), spmm_ta1(Int32), spmm_ta2(T),
                   T, T, tail...};
-            name="spmm_jds_pm", num_warps=4)
+            name="spmm_jds_pm", num_warps)
         return (C, colidx, iterptr, B, α, β) ->
             TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, iterptr, B, T(α), T(β),
@@ -242,7 +242,7 @@ function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
         k = TritonRun.triton_kernel(spmm_jds_kernel,
             Tuple{spmm_ta2(T), spmm_ta1(Int32), spmm_ta1(Int32), spmm_ta1(T),
                   spmm_ta2(T), T, T, tail...};
-            name="spmm_jds", num_warps=4)
+            name="spmm_jds", num_warps)
         return (C, colidx, iterptr, nzval, B, α, β) ->
             TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, iterptr, nzval, B, T(α), T(β),
@@ -250,10 +250,14 @@ function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
     end
 end
 
-# Candidate (tile_m, tile_n) configs, register footprint capped at 4096
-# gathered B elements per program (`per_row` B rows gathered per C row).
+# Candidate (tile_m, tile_n, num_warps) configs. The register footprint is
+# capped at 4096 gathered B elements per program at 4 warps (`per_row` B
+# rows gathered per C row), scaled with the warp count. Wide n is offered
+# as narrow slabs too (tile_n = 8, 16): more programs with fewer elements
+# per thread, which is what the gather-latency-bound kernels want.
 function zoo_tile_candidates(n; per_row)
-    tn = clamp(nextpow(2, n), 4, 64)
-    cap = 4096 ÷ per_row
-    return [(tm, tn) for tm in (32, 64, 128, 256) if tm * tn <= cap]
+    tn_max = clamp(nextpow(2, n), 4, 64)
+    tns = unique(clamp.((8, 16, tn_max), 4, tn_max))
+    return [(tm, tn, nw) for nw in (4, 8), tn in tns, tm in (32, 64, 128, 256)
+            if tm * tn <= 4096 ÷ per_row * (nw ÷ 4)]
 end
