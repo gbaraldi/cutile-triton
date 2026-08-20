@@ -23,9 +23,12 @@ function check(name, Cd, Cref)
 end
 
 "Build the β=0 and general-α/β specializations of one kernel via
-`build(beta_nz)`, run both through `launch(spmm!, C, α, β)`, check both."
-function run_pair(name, build, launch, Cd, Aref, Bh, C0h, α, β)
+`build(beta_nz)`, run both through `launch(spmm!, C, α, β)`, check both.
+`tr` marks the fully transposed layout: Cd, the launched B, and the
+references are all transposed."
+function run_pair(name, build, launch, Cd, Aref, Bh, C0h, α, β; tr=false)
     Cref = Aref * Bh
+    tr && (Cref = permutedims(Cref); C0h = permutedims(C0h))
     spmm! = build(false)
     fill!(Cd, T(NaN))
     launch(spmm!, Cd, 1, 0)
@@ -61,14 +64,27 @@ function test_2pr(rng)
     Bd = CuArray(Bh)
     Cd = CuArray{T}(undef, m, n)
 
+    Btd = CuArray(permutedims(Bh))
+    Cdt = CuArray{T}(undef, n, m)
+
     ok = run_pair("2pr pm",
                   bnz -> build_spmm_2pr(T; tile_m=32, tile_n=16, pm=true, beta_nz=bnz),
                   (f!, C, α, β) -> f!(C, dcol, Bd, α, β),
                   Cd, Apm, Bh, C0h, α, β)
-    ok & run_pair("2pr vals",
+    ok &= run_pair("2pr vals",
                   bnz -> build_spmm_2pr(T; tile_m=64, tile_n=8, pm=false, beta_nz=bnz),
                   (f!, C, α, β) -> f!(C, dcol, dvals, Bd, α, β),
                   Cd, Av, Bh, C0h, α, β)
+    ok &= run_pair("2pr pm t",
+                  bnz -> build_spmm_2pr(T; tile_m=32, tile_n=16, pm=true,
+                                        beta_nz=bnz, bt=true),
+                  (f!, C, α, β) -> f!(C, dcol, Btd, α, β),
+                  Cdt, Apm, Bh, C0h, α, β; tr=true)
+    ok & run_pair("2pr vals t",
+                  bnz -> build_spmm_2pr(T; tile_m=64, tile_n=8, pm=false,
+                                        beta_nz=bnz, bt=true),
+                  (f!, C, α, β) -> f!(C, dcol, dvals, Btd, α, β),
+                  Cdt, Av, Bh, C0h, α, β; tr=true)
 end
 
 # --- JDSMatrix{PM}: rows sorted by decreasing length ------------------------
@@ -105,14 +121,27 @@ function test_jds(rng)
     Bd = CuArray(Bh)
     Cd = CuArray{T}(undef, m, n)
 
+    Btd = CuArray(permutedims(Bh))
+    Cdt = CuArray{T}(undef, n, m)
+
     ok = run_pair("jds pm",
                   bnz -> build_spmm_jds(T; tile_m=32, tile_n=16, pm=true, beta_nz=bnz),
                   (f!, C, α, β) -> f!(C, dcol, diter, Bd, α, β),
                   Cd, Apm, Bh, C0h, α, β)
-    ok & run_pair("jds vals",
+    ok &= run_pair("jds vals",
                   bnz -> build_spmm_jds(T; tile_m=64, tile_n=8, pm=false, beta_nz=bnz),
                   (f!, C, α, β) -> f!(C, dcol_abs, diter, dnz, Bd, α, β),
                   Cd, Av, Bh, C0h, α, β)
+    ok &= run_pair("jds pm t",
+                  bnz -> build_spmm_jds(T; tile_m=32, tile_n=16, pm=true,
+                                        beta_nz=bnz, bt=true),
+                  (f!, C, α, β) -> f!(C, dcol, diter, Btd, α, β),
+                  Cdt, Apm, Bh, C0h, α, β; tr=true)
+    ok & run_pair("jds vals t",
+                  bnz -> build_spmm_jds(T; tile_m=64, tile_n=8, pm=false,
+                                        beta_nz=bnz, bt=true),
+                  (f!, C, α, β) -> f!(C, dcol_abs, diter, dnz, Btd, α, β),
+                  Cdt, Av, Bh, C0h, α, β; tr=true)
 end
 
 rng = MersenneTwister(7)

@@ -18,6 +18,9 @@
 # consecutive rows are contiguous, giving coalesced gathers. The jagged→output
 # row map is assumed identity (`row::Base.OneTo`), which
 # construct_constraint_matrix always produces.
+#
+# Every kernel takes a BT constant selecting the fully transposed layout:
+# B passed as n×k and C as n×m, so the rhs columns are contiguous.
 
 import cuTile as ct
 using TileTriton: TritonRun
@@ -26,6 +29,12 @@ include(joinpath(@__DIR__, "spmm_specs.jl"))
 
 "Global indices covered by block `b` along one axis, as a (TILE,) tile."
 @inline tile_span(b, TILE::Int) = (b - Int32(1)) * Int32(TILE) .+ ct.arange(TILE)
+
+"Gather the (TILE_M, TILE_N) B block for the (TILE_M, 1)-shaped column-id
+tile `cols`; `BT` picks the transposed layout (B is n×k, the rhs columns
+contiguous). Ids ≤ 0 bounds-mask to zero rows either way."
+@inline gather_b(B, cols, ncols, BT::Bool) =
+    BT ? ct.gather(B, (ncols, cols)) : ct.gather(B, (cols, ncols))
 
 """
 Number of jagged diagonals reaching row `i0`. Rows are sorted by decreasing
@@ -45,9 +54,21 @@ speculatively evaluated load in bounds at `nj == ndiag` (`iterptr` has
 end
 
 "α-scale, optional β·C accumulate, and the edge-clipped store of block
-(bm, bn) of C, shared by all four kernels."
+(bm, bn) of C, shared by all four kernels. With `BT` the array holds the
+transposed n×m C; a permuted view keeps the block logic identical."
 @inline function spmm_epilogue(C, bm, bn, acc, alpha, beta,
-                               TILE_M::Int, TILE_N::Int, BETA_NZ::Bool)
+                               TILE_M::Int, TILE_N::Int, BETA_NZ::Bool, BT::Bool)
+    if BT
+        epilogue_store(permutedims(C, (2, 1)), bm, bn, acc, alpha, beta,
+                       TILE_M, TILE_N, BETA_NZ)
+    else
+        epilogue_store(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ)
+    end
+    return
+end
+
+@inline function epilogue_store(C, bm, bn, acc, alpha, beta,
+                                TILE_M::Int, TILE_N::Int, BETA_NZ::Bool)
     tiles = ct.eachtile(C, (TILE_M, TILE_N); padding_mode=ct.PaddingMode.Zero)
     out = alpha .* acc
     if BETA_NZ
@@ -62,8 +83,8 @@ end
 function spmm_2pr_pm_kernel(C::ct.TileArray{T, 2},
                             colidx::ct.TileArray{Int32, 2},
                             B::ct.TileArray{T, 2},
-                            alpha::T, beta::T,
-                            TILE_M::Int, TILE_N::Int, BETA_NZ::Bool) where {T}
+                            alpha::T, beta::T, TILE_M::Int, TILE_N::Int,
+                            BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     slots = ct.eachtile(colidx, (1, TILE_M); padding_mode=ct.PaddingMode.Zero)
@@ -71,9 +92,9 @@ function spmm_2pr_pm_kernel(C::ct.TileArray{T, 2},
     j2 = ct.load(slots, (Int32(2), bm))
     ncols = reshape(tile_span(bn, TILE_N), (1, TILE_N))
     # column id 0 (absent) bounds-masks to a zero row of B
-    b1 = ct.gather(B, (reshape(j1, (TILE_M, 1)), ncols))
-    b2 = ct.gather(B, (reshape(j2, (TILE_M, 1)), ncols))
-    spmm_epilogue(C, bm, bn, b1 .- b2, alpha, beta, TILE_M, TILE_N, BETA_NZ)
+    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT)
+    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT)
+    spmm_epilogue(C, bm, bn, b1 .- b2, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
 
@@ -83,8 +104,8 @@ function spmm_2pr_kernel(C::ct.TileArray{T, 2},
                          colidx::ct.TileArray{Int32, 2},
                          vals::ct.TileArray{T, 2},
                          B::ct.TileArray{T, 2},
-                         alpha::T, beta::T,
-                         TILE_M::Int, TILE_N::Int, BETA_NZ::Bool) where {T}
+                         alpha::T, beta::T, TILE_M::Int, TILE_N::Int,
+                         BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     slots = ct.eachtile(colidx, (1, TILE_M); padding_mode=ct.PaddingMode.Zero)
@@ -94,10 +115,10 @@ function spmm_2pr_kernel(C::ct.TileArray{T, 2},
     v1 = ct.load(vslots, (Int32(1), bm))
     v2 = ct.load(vslots, (Int32(2), bm))
     ncols = reshape(tile_span(bn, TILE_N), (1, TILE_N))
-    b1 = ct.gather(B, (reshape(j1, (TILE_M, 1)), ncols))
-    b2 = ct.gather(B, (reshape(j2, (TILE_M, 1)), ncols))
+    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT)
+    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT)
     acc = reshape(v1, (TILE_M, 1)) .* b1 .+ reshape(v2, (TILE_M, 1)) .* b2
-    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ)
+    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
 
@@ -107,8 +128,8 @@ function spmm_jds_pm_kernel(C::ct.TileArray{T, 2},
                             colidx::ct.TileArray{Int32, 1},
                             iterptr::ct.TileArray{Int32, 1},
                             B::ct.TileArray{T, 2},
-                            alpha::T, beta::T, ndiag::Int32,
-                            TILE_M::Int, TILE_N::Int, BETA_NZ::Bool) where {T}
+                            alpha::T, beta::T, ndiag::Int32, TILE_M::Int,
+                            TILE_N::Int, BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     rows = tile_span(bm, TILE_M)
@@ -124,10 +145,10 @@ function spmm_jds_pm_kernel(C::ct.TileArray{T, 2},
         k = ct.gather(colidx, ptrs; mask=kmask, padding_value=Int32(0))
         cols = abs.(k)                            # id 0 pads B to 0
         sgn = ifelse.(k .< 0, T(-1), T(1))
-        bt = ct.gather(B, (reshape(cols, (TILE_M, 1)), ncols))
-        acc = acc .+ reshape(sgn, (TILE_M, 1)) .* bt
+        btile = gather_b(B, reshape(cols, (TILE_M, 1)), ncols, BT)
+        acc = acc .+ reshape(sgn, (TILE_M, 1)) .* btile
     end
-    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ)
+    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
 
@@ -138,8 +159,8 @@ function spmm_jds_kernel(C::ct.TileArray{T, 2},
                          iterptr::ct.TileArray{Int32, 1},
                          nzval::ct.TileArray{T, 1},
                          B::ct.TileArray{T, 2},
-                         alpha::T, beta::T, ndiag::Int32,
-                         TILE_M::Int, TILE_N::Int, BETA_NZ::Bool) where {T}
+                         alpha::T, beta::T, ndiag::Int32, TILE_M::Int,
+                         TILE_N::Int, BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     rows = tile_span(bm, TILE_M)
@@ -154,31 +175,33 @@ function spmm_jds_kernel(C::ct.TileArray{T, 2},
         kmask = ptrs .< p1
         cols = ct.gather(colidx, ptrs; mask=kmask, padding_value=Int32(0))
         vals = ct.gather(nzval, ptrs; mask=kmask)
-        bt = ct.gather(B, (reshape(cols, (TILE_M, 1)), ncols))
-        acc = acc .+ reshape(vals, (TILE_M, 1)) .* bt
+        btile = gather_b(B, reshape(cols, (TILE_M, 1)), ncols, BT)
+        acc = acc .+ reshape(vals, (TILE_M, 1)) .* btile
     end
-    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ)
+    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
 
 """
     build_spmm_2pr(T; tile_m, tile_n, pm, beta_nz) -> spmm!
 
-Compile a Matrix2PerRow{PM} SpMM kernel. The launcher is
+Compile a Matrix2PerRow{PM} SpMM kernel (`bt = true` for the transposed
+n×k B layout). The launcher is
 `spmm!(C, colidx, B, α, β)` for `pm = true` and
 `spmm!(C, colidx, vals, B, α, β)` otherwise, with `colidx`/`vals` the
 2×m slot matrices.
 """
 function build_spmm_2pr(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
-                        beta_nz::Bool) where {T}
+                        beta_nz::Bool, bt::Bool=false) where {T}
     consts = (ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
-              ct.Constant{Bool, beta_nz})
+              ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
+    grid = bt ? spmm_grid_t : spmm_grid
     if pm
         k = TritonRun.triton_kernel(spmm_2pr_pm_kernel,
             Tuple{spmm_ta2(T), spmm_ta2(Int32), spmm_ta2(T), T, T, consts...};
             name="spmm_2pr_pm", num_warps=4)
         return (C, colidx, B, α, β) ->
-            TritonRun.launch!(k, spmm_grid(C, tile_m, tile_n),
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, B, T(α), T(β))
     else
         k = TritonRun.triton_kernel(spmm_2pr_kernel,
@@ -186,7 +209,7 @@ function build_spmm_2pr(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
                   consts...};
             name="spmm_2pr", num_warps=4)
         return (C, colidx, vals, B, α, β) ->
-            TritonRun.launch!(k, spmm_grid(C, tile_m, tile_n),
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, vals, B, T(α), T(β))
     end
 end
@@ -194,23 +217,25 @@ end
 """
     build_spmm_jds(T; tile_m, tile_n, pm, beta_nz) -> spmm!
 
-Compile a JDSMatrix{PM} SpMM kernel. The launcher is
+Compile a JDSMatrix{PM} SpMM kernel (`bt = true` for the transposed n×k
+B layout). The launcher is
 `spmm!(C, colidx, iterptr, B, α, β)` for `pm = true` and
 `spmm!(C, colidx, iterptr, nzval, B, α, β)` otherwise. Assumes the
 jagged→output row map is the identity.
 """
 function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
-                        beta_nz::Bool) where {T}
+                        beta_nz::Bool, bt::Bool=false) where {T}
     # runtime ndiag, then the compile-time tile constants
     tail = (Int32, ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
-            ct.Constant{Bool, beta_nz})
+            ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
+    grid = bt ? spmm_grid_t : spmm_grid
     if pm
         k = TritonRun.triton_kernel(spmm_jds_pm_kernel,
             Tuple{spmm_ta2(T), spmm_ta1(Int32), spmm_ta1(Int32), spmm_ta2(T),
                   T, T, tail...};
             name="spmm_jds_pm", num_warps=4)
         return (C, colidx, iterptr, B, α, β) ->
-            TritonRun.launch!(k, spmm_grid(C, tile_m, tile_n),
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, iterptr, B, T(α), T(β),
                               Int32(length(iterptr) - 1))
     else
@@ -219,7 +244,7 @@ function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
                   spmm_ta2(T), T, T, tail...};
             name="spmm_jds", num_warps=4)
         return (C, colidx, iterptr, nzval, B, α, β) ->
-            TritonRun.launch!(k, spmm_grid(C, tile_m, tile_n),
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, colidx, iterptr, nzval, B, T(α), T(β),
                               Int32(length(iterptr) - 1))
     end

@@ -11,3 +11,6 @@ spmm_ta1(T) = ct.TileArray{T, 1, Int32, SPMM_SPEC1}
 spmm_ta2(T) = ct.TileArray{T, 2, Int32, SPMM_SPEC2}
 
 spmm_grid(C, tile_m, tile_n) = (cld(size(C, 1), tile_m), cld(size(C, 2), tile_n))
+
+# grid for the transposed layout (C stored n×m; bid(1) still walks M-blocks)
+spmm_grid_t(C, tile_m, tile_n) = (cld(size(C, 2), tile_m), cld(size(C, 1), tile_n))
