@@ -26,11 +26,14 @@ if BACKEND == "cuda"
     const GPUArr = CuArray
     device_sync() = CUDA.synchronize()
     device_name() = CUDA.name(CUDA.device())
+    # @eval: the @elapsed macro can only expand once its module is loaded
+    @eval device_elapsed(f) = CUDA.@elapsed f()
 else
     using AMDGPU
     const GPUArr = ROCArray
     device_sync() = AMDGPU.synchronize()
     device_name() = AMDGPU.HIP.name(AMDGPU.device())
+    @eval device_elapsed(f) = AMDGPU.@elapsed f()
 end
 
 using TileTriton
@@ -67,6 +70,8 @@ const VENDOR_NAME = BACKEND == "cuda" ? "cuSPARSE" : "rocSPARSE"
 
 # ---------------------------------------------------------------------------
 
+# Timed with device events: bracketing a host clock with synchronize() rounds
+# anything beyond ~2 ms up to the ~1 ms granularity of the host-side wait.
 function timeit(f; warmup=3, nruns=20)
     for _ in 1:warmup
         f()
@@ -74,11 +79,7 @@ function timeit(f; warmup=3, nruns=20)
     device_sync()
     best = Inf
     for _ in 1:nruns
-        device_sync()
-        t0 = time_ns()
-        f()
-        device_sync()
-        best = min(best, (time_ns() - t0) / 1e9)
+        best = min(best, Float64(device_elapsed(f)))
     end
     return best
 end
