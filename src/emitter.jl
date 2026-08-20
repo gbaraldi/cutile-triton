@@ -710,7 +710,7 @@ const MATH_UN = Dict(:exp => math.exp, :exp2 => math.exp2, :log => math.log,
                      :log2 => math.log2, :sin => math.sin, :cos => math.cos,
                      :tan => math.tan, :sinh => math.sinh, :cosh => math.cosh,
                      :tanh => math.tanh, :sqrt => math.sqrt, :rsqrt => math.rsqrt,
-                     :fabs => math.absf, :absf => math.absf,
+                     :fabs => math.absf, :absf => math.absf, :absi => math.absi,
                      :floor => math.floor, :ceil => math.ceil, :erf => math.erf)
 const MATH_BIN = Dict(:pow => math.powf, :atan2 => math.atan2)
 
@@ -1581,10 +1581,6 @@ function emit_if!(cg::CG, op::IfOp, @nospecialize(typ))
     return out
 end
 
-"Scalar-constant loop carries become real carries; tokens stay dropped."
-materialize_carry(@nospecialize(r)) =
-    r isa Number ? materialize(r, scalar_type(typeof(r))) : r
-
 function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
     i32 = IR.Type(Int32)
     lb = let r = resolve(cg, op.lower); r isa IR.Value ? r : const_i32(Int(r)) end
@@ -1592,17 +1588,19 @@ function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
     st = let r = resolve(cg, op.step); r isa IR.Value ? r : const_i32(Int(r)) end
 
     # Tokens (dropped in this backend) may be loop-carried; filter them out
-    # of the scf carries and bind their block args to `nothing`.
-    rinit = Any[materialize_carry(resolve(cg, x)) for x in op.init_values]
-    keep = Bool[r isa IR.Value || r isa TF32Val for r in rinit]
-    inits = IR.Value[asvalue(r) for r in rinit[keep]]
+    # of the scf carries by their inferred types (as emit_if! does for branch
+    # results) and bind their block args to `nothing`. Constant inits are
+    # materialized against the inferred carry type.
+    carry_args = [a for a in op.body.args if a.id != op.iv_arg.id]
+    keep = Bool[!is_token_type(a.type) for a in carry_args]
+    inits = IR.Value[materialize(resolve(cg, x), tile_type(a.type))
+                     for (a, x) in zip(carry_args[keep], op.init_values[keep])]
     init_types = IR.Type[IR.type(v) for v in inits]
 
-    carry_ids = Int[a.id for a in op.body.args if a.id != op.iv_arg.id]
     barg_types = IR.Type[i32; init_types...]
-    barg_ids = Int[op.iv_arg.id; carry_ids[keep]...]
-    for (j, id) in enumerate(carry_ids)
-        keep[j] || (cg.blockargs[id] = nothing)
+    barg_ids = Int[op.iv_arg.id; [a.id for a in carry_args[keep]]...]
+    for (j, a) in enumerate(carry_args)
+        keep[j] || (cg.blockargs[a.id] = nothing)
     end
     region = region_from_block!(cg, op.body, init_types;
                                 blockarg_types=barg_types, blockarg_ids=barg_ids, keep)
@@ -1616,17 +1614,19 @@ function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
 end
 
 function emit_while!(cg::CG, op::WhileOp, @nospecialize(typ))
-    # Token carries are dropped (see emit_for!).
-    rinit = Any[materialize_carry(resolve(cg, x)) for x in op.init_values]
-    keep = Bool[r isa IR.Value || r isa TF32Val for r in rinit]
-    inits = IR.Value[asvalue(r) for r in rinit[keep]]
+    # Token carries are dropped (see emit_for!); the before/after block-arg
+    # types type the inits and the scf.condition args respectively.
+    keep = Bool[!is_token_type(a.type) for a in op.before.args]
+    inits = IR.Value[materialize(resolve(cg, x), tile_type(a.type))
+                     for (a, x) in zip(op.before.args[keep], op.init_values[keep])]
     init_types = IR.Type[IR.type(v) for v in inits]
 
     # before region: carries in, scf.condition(cond, args) out
     before = IR.Region()
     bblk = IR.Block(init_types, [IR.Location() for _ in init_types])
     push!(before, bblk)
-    local res_types, ckeep
+    ckeep = Bool[!is_token_type(a.type) for a in op.after.args]
+    local res_types
     IR.activate(bblk)
     try
         k = 0
@@ -1636,9 +1636,8 @@ function emit_while!(cg::CG, op::WhileOp, @nospecialize(typ))
         walk_block!(cg, op.before)
         term = op.before.terminator::ConditionOp
         cond = asvalue(resolve(cg, term.condition))
-        rargs = Any[materialize_carry(resolve(cg, x)) for x in term.args]
-        ckeep = Bool[r isa IR.Value || r isa TF32Val for r in rargs]
-        cargs = IR.Value[asvalue(r) for r in rargs[ckeep]]
+        cargs = IR.Value[materialize(resolve(cg, x), tile_type(a.type))
+                         for (a, x) in zip(op.after.args[ckeep], term.args[ckeep])]
         res_types = IR.Type[IR.type(v) for v in cargs]
         scf.condition(cond, cargs)
     finally
