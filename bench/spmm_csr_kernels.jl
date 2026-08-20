@@ -14,9 +14,10 @@
 #    masks. Better occupancy when rows are short (the PDLP case), at the
 #    cost of wasted lanes when row lengths within a block are skewed.
 #
-# Out-of-range lanes never fault: gathers are bounds-masked, padded column
-# ids point at column 1 while their values are padded to 0, and the final
-# store/scatter is bounds-checked.
+# Out-of-range lanes never fault and cost no memory traffic: gathers are
+# bounds-masked, padded column ids are 0 so the B gather bounds-masks them
+# to zero rows without issuing loads, and the final store/scatter is
+# bounds-checked.
 
 import cuTile as ct
 using TileTriton: TritonRun
@@ -42,7 +43,7 @@ function spmm_csr_row_kernel(C::ct.TileArray{T, 2},
         kidx = (p0 + (t - Int32(1)) * Int32(TILE_K)) .+ ks
         kmask = kidx .< p1
         vals = ct.gather(nzval, kidx; mask=kmask)
-        cols = ct.gather(colval, kidx; mask=kmask, padding_value=Int32(1))
+        cols = ct.gather(colval, kidx; mask=kmask, padding_value=Int32(0))
         bt = ct.gather(B, (reshape(cols, (TILE_K, 1)), reshape(ncols, (1, TILE_N))))
         acc = acc .+ reshape(vals, (TILE_K, 1)) .* bt
     end
@@ -80,7 +81,7 @@ function spmm_csr_rows_kernel(C::ct.TileArray{T, 2},
         kidx = (p0m .+ (t - Int32(1)) * Int32(TILE_K)) .+ reshape(ks, (1, TILE_K))
         kmask = kidx .< p1m
         vals = ct.gather(nzval, kidx; mask=kmask)
-        cols = ct.gather(colval, kidx; mask=kmask, padding_value=Int32(1))
+        cols = ct.gather(colval, kidx; mask=kmask, padding_value=Int32(0))
         bt = ct.gather(B, (reshape(cols, (TILE_M, TILE_K, 1)),
                            reshape(ncols, (1, 1, TILE_N))))
         acc = acc .+ reshape(sum(reshape(vals, (TILE_M, TILE_K, 1)) .* bt; dims=2),
@@ -130,11 +131,13 @@ end
 
 # Candidate (tile_m, tile_n, tile_k) configs; tile_m == 1 is the
 # row-per-program kernel. Register footprint capped at 4096 gathered
-# B elements per program.
+# B elements per program, so wide slabs (tile_n = 64) only fit multi-row
+# tiles with a short tile_k — fine for the few-nonzeros-per-row matrices
+# these target, where a long tile_k is mostly masked lanes anyway.
 function csr_tile_candidates(n)
     tn = clamp(nextpow(2, n), 4, 64)
     cands = [(1, tn, 32), (1, tn, 64)]
-    for tm in (8, 32), tk in (16, 32)
+    for tm in (8, 16, 32), tk in (4, 8, 16, 32)
         tm * tn * tk <= 4096 && push!(cands, (tm, tn, tk))
     end
     return cands

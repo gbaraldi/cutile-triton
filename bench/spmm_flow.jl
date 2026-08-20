@@ -48,19 +48,23 @@ compilation can't take."
     Vec(ntuple(q -> @inbounds(b[col, b0 + q]), Val(NB)))
 
 "α/β-update row i, columns b0+1:b0+NB of C with the accumulator lanes
-(column i of the transposed n×m C when `BT`)."
-@inline function nb_store!(c, s::Vec{NB}, i, b0, α, β, ::Val{BT}) where {NB, BT}
+(column i of the transposed n×m C when `BT`). `BETA_NZ = false` is the
+β = 0 specialization that never reads C — what MinimumCostFlows' `mul!`
+gets from its `Zero()` dispatch."
+@inline function nb_store!(c, s::Vec{NB}, i, b0, α, β,
+                           ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
     @inbounds for q in 1:NB
+        v = α * s[q]
         if BT
-            c[b0 + q, i] = α * s[q] + β * c[b0 + q, i]
+            c[b0 + q, i] = BETA_NZ ? v + β * c[b0 + q, i] : v
         else
-            c[i, b0 + q] = α * s[q] + β * c[i, b0 + q]
+            c[i, b0 + q] = BETA_NZ ? v + β * c[i, b0 + q] : v
         end
     end
 end
 
-@kernel function spmm_jds_pm_ka!(c, colidx, iterptr, b, α, β,
-                                 ::Val{NB}, ::Val{BT}) where {NB, BT}
+@kernel function spmm_jds_pm_ka!(c, colidx, iterptr, b, α, β, ::Val{NB},
+                                 ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
     i, blk = @index(Global, NTuple)
     b0 = (blk - 1) * NB
     T = eltype(c)
@@ -74,12 +78,12 @@ end
                        nb_load(b, abs(k), b0, Val(NB), Val(BT)), s)
             ptr = i + iterptr[j += 1] - 1
         end
-        nb_store!(c, s, i, b0, α, β, Val(BT))
+        nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
 end
 
-@kernel function spmm_jds_ka!(c, colidx, iterptr, vals, b, α, β,
-                              ::Val{NB}, ::Val{BT}) where {NB, BT}
+@kernel function spmm_jds_ka!(c, colidx, iterptr, vals, b, α, β, ::Val{NB},
+                              ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
     i, blk = @index(Global, NTuple)
     b0 = (blk - 1) * NB
     @inbounds begin
@@ -91,12 +95,12 @@ end
                        nb_load(b, colidx[ptr], b0, Val(NB), Val(BT)), s)
             ptr = i + iterptr[j += 1] - 1
         end
-        nb_store!(c, s, i, b0, α, β, Val(BT))
+        nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
 end
 
-@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β,
-                                 ::Val{NB}, ::Val{BT}) where {NB, BT}
+@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β, ::Val{NB},
+                                 ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
     i, blk = @index(Global, NTuple)
     b0 = (blk - 1) * NB
     @inbounds begin
@@ -105,12 +109,12 @@ end
         j1 > 0 && (s += nb_load(b, j1, b0, Val(NB), Val(BT)))
         j2 = colidx[2, i]
         j2 > 0 && (s -= nb_load(b, j2, b0, Val(NB), Val(BT)))
-        nb_store!(c, s, i, b0, α, β, Val(BT))
+        nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
 end
 
-@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β,
-                              ::Val{NB}, ::Val{BT}) where {NB, BT}
+@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β, ::Val{NB},
+                              ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
     i, blk = @index(Global, NTuple)
     b0 = (blk - 1) * NB
     @inbounds begin
@@ -119,7 +123,7 @@ end
         j1 > 0 && (s = muladd(vals[1, i], nb_load(b, j1, b0, Val(NB), Val(BT)), s))
         j2 = colidx[2, i]
         j2 > 0 && (s = muladd(vals[2, i], nb_load(b, j2, b0, Val(NB), Val(BT)), s))
-        nb_store!(c, s, i, b0, α, β, Val(BT))
+        nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
 end
 
@@ -129,7 +133,7 @@ end
 Verify and time one implementation. `f0(Cd)` runs the β=0 path in place,
 `fab(Cd)` the general α/β path (or `nothing` to skip); `init0` is what Cd
 must hold before `f0` (NaN poison for kernels that never read C, 0 for the
-KA/vendor paths that do). Returns the β=0 best time (or nothing).
+KA-csr/vendor paths that do). Returns the β=0 best time (or nothing).
 """
 function bench_impl(case, label, flops, Cd, ctx; f0, fab=nothing, init0=NaN)
     (; Cref, Cref2, C0, rtol) = ctx
@@ -277,16 +281,15 @@ function main()
                         n % nb == 0 || continue
                         grid = (mm, n ÷ nb)
                         bench_impl(case, "KA jds pm[nb=$nb$lay]", flops, Cd, ctx;
-                            init0=0,
                             f0=C -> jds_pm_ka!(C, jds_col, jds_iter, Bx, T(1),
-                                               T(0), Val(nb), Val(bt);
+                                               T(0), Val(nb), Val(bt), Val(false);
                                                ndrange=grid),
                             fab=C -> jds_pm_ka!(C, jds_col, jds_iter, Bx, α2, β2,
-                                                Val(nb), Val(bt); ndrange=grid))
+                                                Val(nb), Val(bt), Val(true);
+                                                ndrange=grid))
                         bench_impl(case, "KA jds[nb=$nb$lay]", flops, Cd, ctx;
-                            init0=0,
                             f0=C -> jds_ka!(C, jds_col_abs, jds_iter, jds_nz, Bx,
-                                            T(1), T(0), Val(nb), Val(bt);
+                                            T(1), T(0), Val(nb), Val(bt), Val(false);
                                             ndrange=grid))
                     end
                 else
@@ -308,15 +311,14 @@ function main()
                         n % nb == 0 || continue
                         grid = (mm, n ÷ nb)
                         bench_impl(case, "KA 2pr pm[nb=$nb$lay]", flops, Cd, ctx;
-                            init0=0,
-                            f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0),
-                                               Val(nb), Val(bt); ndrange=grid),
+                            f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0), Val(nb),
+                                               Val(bt), Val(false); ndrange=grid),
                             fab=C -> tpr_pm_ka!(C, tpr_col2, Bx, α2, β2, Val(nb),
-                                                Val(bt); ndrange=grid))
+                                                Val(bt), Val(true); ndrange=grid))
                         bench_impl(case, "KA 2pr[nb=$nb$lay]", flops, Cd, ctx;
-                            init0=0,
-                            f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bx, T(1),
-                                            T(0), Val(nb), Val(bt); ndrange=grid))
+                            f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bx, T(1), T(0),
+                                            Val(nb), Val(bt), Val(false);
+                                            ndrange=grid))
                     end
                 end
 
