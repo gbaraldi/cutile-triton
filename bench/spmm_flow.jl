@@ -3,13 +3,17 @@
 # in every format we have a kernel for:
 #
 #   A  (nodes×arcs, ~5 nnz/row):  cuTile CSR, cuTile JDS and range+CSR
-#                                 (pm/vals), KA jds, KA rc, KA csr, cuSPARSE/rocSPARSE
+#                                 (pm/vals), KA jds, KA rc, KA csr, cuSPARSE/rocSPARSE,
+#                                 and the hybrid rc + heavy rows ("rch") when
+#                                 the instance has rows above SPMM_HEAVY_MAXLEN
 #   Aᵀ (arcs×nodes, ≤2 nnz/row):  cuTile CSR, cuTile 2-per-row (pm/vals),
 #                                 KA 2pr, KA csr, cuSPARSE/rocSPARSE
 #
 #   julia --project=. bench/spmm_flow.jl [n...]      (default n = 8, 64, 256)
+#   SPMM_MATS=At restricts to one matrix; SPMM_TYPE=Float64 switches the eltype;
+#   SPMM_DATA=vision_rnd_05 picks another exported instance (default flow_TX).
 #
-# Needs bench/data/flow_TX{,_t,_zoo}.jls, serialized by the export script
+# Needs bench/data/<SPMM_DATA>{,_t,_zoo}.jls, serialized by the export script
 # (SparseMatrixCSC{Float32,Int32} of A and Aᵀ plus the raw JDSMatrixPM /
 # Matrix2PerRowPM arrays from MinimumCostFlows).
 # The zoo kernels (cuTile and KA) run in the standard layout and a fully
@@ -25,6 +29,7 @@ using SIMD
 include(joinpath(@__DIR__, "spmm_common.jl"))
 include(joinpath(@__DIR__, "spmm_csr_kernels.jl"))
 include(joinpath(@__DIR__, "spmm_zoo_kernels.jl"))
+include(joinpath(@__DIR__, "spmm_formats.jl"))
 
 # --- KA baselines: SpMM versions of the matrix_zoo kernels; the csr baseline
 # --- comes from spmm_common.jl.
@@ -99,31 +104,104 @@ end
     end
 end
 
-@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β, ::Val{NB},
-                                 ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
+"Is slot id `j` present? With `EXACT2` every row is known to hold two
+entries (each arc has a tail and a head), so the `j > 0` test is dropped."
+@inline slot_present(j, ::Val{false}) = j > 0
+@inline slot_present(j, ::Val{true}) = true
+
+@kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β, ::Val{NB}, ::Val{BT},
+                                 ::Val{BETA_NZ}, ::Val{EXACT2}) where {NB, BT, BETA_NZ, EXACT2}
     i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     @inbounds begin
         s = zero(Vec{NB, eltype(c)})
         j1 = colidx[1, i]
-        j1 > 0 && (s += nb_load(b, j1, b0, Val(NB), Val(BT)))
+        slot_present(j1, Val(EXACT2)) && (s += nb_load(b, j1, b0, Val(NB), Val(BT)))
         j2 = colidx[2, i]
-        j2 > 0 && (s -= nb_load(b, j2, b0, Val(NB), Val(BT)))
+        slot_present(j2, Val(EXACT2)) && (s -= nb_load(b, j2, b0, Val(NB), Val(BT)))
         nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
 end
 
-@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β, ::Val{NB},
-                              ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
+@kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β, ::Val{NB}, ::Val{BT},
+                              ::Val{BETA_NZ}, ::Val{EXACT2}) where {NB, BT, BETA_NZ, EXACT2}
     i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     @inbounds begin
         s = zero(Vec{NB, eltype(c)})
         j1 = colidx[1, i]
-        j1 > 0 && (s = muladd(vals[1, i], nb_load(b, j1, b0, Val(NB), Val(BT)), s))
+        slot_present(j1, Val(EXACT2)) &&
+            (s = muladd(vals[1, i], nb_load(b, j1, b0, Val(NB), Val(BT)), s))
         j2 = colidx[2, i]
-        j2 > 0 && (s = muladd(vals[2, i], nb_load(b, j2, b0, Val(NB), Val(BT)), s))
+        slot_present(j2, Val(EXACT2)) &&
+            (s = muladd(vals[2, i], nb_load(b, j2, b0, Val(NB), Val(BT)), s))
         nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
+    end
+end
+
+# Heavy rows of the hybrid range+CSR ("rch") format: pass 1 sums CHUNK-entry
+# interleaved slices of a heavy row per thread (chunk c of heavy row h =
+# crow[c] takes the entries k ≡ c - cptr[h] mod nchunks(h), so consecutive
+# threads read consecutive B rows of the range), pass 2 adds the per-chunk
+# partials into C. The partial matrix is laid out like C (nchunks × n, or
+# n × nchunks when transposed).
+@kernel function heavy_partials_pm_ka!(part, crow, cptr, hlo, hhi, hptr, hids, b,
+                                       ::Val{NB}, ::Val{BT}) where {NB, BT}
+    c, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
+    b0 = (blk - 1) * NB
+    @inbounds begin
+        h = crow[c]
+        c0 = cptr[h]; nc = cptr[h + 1] - c0
+        lo = hlo[h]; rlen = hhi[h] - lo
+        p0 = hptr[h]; len = rlen + hptr[h + 1] - p0
+        s = zero(Vec{NB, eltype(part)})
+        kk = c - c0
+        while kk < rlen
+            s += nb_load(b, lo + kk, b0, Val(NB), Val(BT))
+            kk += nc
+        end
+        while kk < len
+            s -= nb_load(b, hids[p0 + kk - rlen], b0, Val(NB), Val(BT))
+            kk += nc
+        end
+        nb_store!(part, s, c, b0, one(eltype(part)), zero(eltype(part)), Val(BT), Val(false))
+    end
+end
+
+@kernel function heavy_partials_ka!(part, crow, cptr, hlo, hhi, rvals, hptr, hids, hinvals, b,
+                                    ::Val{NB}, ::Val{BT}) where {NB, BT}
+    c, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
+    b0 = (blk - 1) * NB
+    @inbounds begin
+        h = crow[c]
+        c0 = cptr[h]; nc = cptr[h + 1] - c0
+        lo = hlo[h]; rlen = hhi[h] - lo
+        p0 = hptr[h]; len = rlen + hptr[h + 1] - p0
+        s = zero(Vec{NB, eltype(part)})
+        kk = c - c0
+        while kk < rlen
+            s = muladd(rvals[lo + kk], nb_load(b, lo + kk, b0, Val(NB), Val(BT)), s)
+            kk += nc
+        end
+        while kk < len
+            p = p0 + kk - rlen
+            s = muladd(hinvals[p], nb_load(b, hids[p], b0, Val(NB), Val(BT)), s)
+            kk += nc
+        end
+        nb_store!(part, s, c, b0, one(eltype(part)), zero(eltype(part)), Val(BT), Val(false))
+    end
+end
+
+"C[hrow[h], :] += α · Σ partials of heavy row h (C already holds β·C there)."
+@kernel function heavy_reduce_ka!(c, part, hrow, cptr, α, ::Val{NB}, ::Val{BT}) where {NB, BT}
+    h, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
+    b0 = (blk - 1) * NB
+    @inbounds begin
+        s = zero(Vec{NB, eltype(c)})
+        for cc in cptr[h]:(cptr[h + 1] - Int32(1))
+            s += nb_load(part, cc, b0, Val(NB), Val(BT))
+        end
+        nb_store!(c, s, hrow[h], b0, α, one(eltype(c)), Val(BT), Val(true))
     end
 end
 
@@ -168,39 +246,13 @@ end
     end
 end
 
-"""
-    range_csr(rowptr, colval, nzval) -> (; lo, hi, inptr, inids, rsign)
-
-Split a CSR matrix whose rows are one contiguous column range of one sign
-plus scattered columns of the other — the node-arc incidence with arcs
-numbered by one endpoint — into per-row range bounds (hi exclusive) and a
-CSR of the scattered part. Errors if neither sign's entries are contiguous
-in every row.
-"""
-function range_csr(rowptr, colval, nzval)
-    m = length(rowptr) - 1
-    for rsign in (-1, 1)
-        lo = ones(Int32, m); hi = ones(Int32, m)
-        inptr = Vector{Int32}(undef, m + 1); inptr[1] = 1
-        inids = sizehint!(Int32[], length(colval) ÷ 2)
-        ok = true
-        for i in 1:m
-            cnt = 0; first = typemax(Int32); last = Int32(0)
-            for p in rowptr[i]:(rowptr[i + 1] - 1)
-                if sign(nzval[p]) == rsign
-                    cnt += 1; first = min(first, colval[p]); last = max(last, colval[p])
-                else
-                    push!(inids, colval[p])
-                end
-            end
-            cnt == 0 || cnt == last - first + 1 || (ok = false; break)
-            cnt > 0 && (lo[i] = first; hi[i] = last + 1)
-            inptr[i + 1] = length(inids) + 1
-        end
-        ok && return (; lo, hi, inptr, inids, rsign)
-    end
-    error("range_csr: no sign has contiguous columns in every row")
-end
+# Hybrid split: rows above HEAVY_MAXLEN nonzeros go to the chunk-parallel
+# heavy passes; HEAVY_CHUNK_* is the nonzeros per chunk (per thread for KA,
+# per program — a multiple of the heavy tile_k — for cuTile).
+const HEAVY_MAXLEN = parse(Int, get(ENV, "SPMM_HEAVY_MAXLEN", "64"))
+const HEAVY_CHUNK_KA = parse(Int, get(ENV, "SPMM_HEAVY_CHUNK_KA", "64"))
+const HEAVY_CHUNK_CT = parse(Int, get(ENV, "SPMM_HEAVY_CHUNK_CT", "256"))
+const HEAVY_TILE_K = 32
 
 # ---------------------------------------------------------------------------
 
@@ -275,13 +327,14 @@ function main()
     ns = isempty(ARGS) ? [8, 64, 256] : parse.(Int, ARGS)
     T = get(ENV, "SPMM_TYPE", "Float32") == "Float64" ? Float64 : Float32
     datadir = joinpath(@__DIR__, "data")
+    data = get(ENV, "SPMM_DATA", "flow_TX")
 
-    A = SparseMatrixCSC{T, Int32}(deserialize(joinpath(datadir, "flow_TX.jls")))
-    At = SparseMatrixCSC{T, Int32}(deserialize(joinpath(datadir, "flow_TX_t.jls")))
-    zoo = deserialize(joinpath(datadir, "flow_TX_zoo.jls"))
+    A = SparseMatrixCSC{T, Int32}(deserialize(joinpath(datadir, "$data.jls")))
+    At = SparseMatrixCSC{T, Int32}(deserialize(joinpath(datadir, "$(data)_t.jls")))
+    zoo = deserialize(joinpath(datadir, "$(data)_zoo.jls"))
     m, k = size(A)
-    println("# spmm_flow bench: $BACKEND ($(device_name())), $T, ",
-            "A = $m×$k with nnz=$(nnz(A)) (TX road incidence), n = $ns")
+    println("# spmm_flow bench: $BACKEND ($(device_name())), $T, $data: ",
+            "A = $m×$k with nnz=$(nnz(A)) (node-arc incidence), n = $ns")
     rng = MersenneTwister(42)
     α2, β2 = T(2.5), T(-0.5)
     rtol = sqrt(eps(T)) * 100
@@ -308,12 +361,34 @@ function main()
     rc_rvals = GPUArr(fill(T(rc.rsign), k)); rc_invals = GPUArr(fill(T(-rc.rsign), length(rc.inids)))
     rsign = T(rc.rsign)
 
+    # hybrid: rows longer than HEAVY_MAXLEN peeled out (none on the road matrices)
+    rch = split_heavy(rc; maxlen=HEAVY_MAXLEN)
+    nheavy = length(rch.heavy.row)
+    println("# hybrid rc: $nheavy heavy rows (> $HEAVY_MAXLEN nnz), ",
+            "$(sum(rch.heavy.len; init=0)) of $(nnz(A)) nnz")
+    if nheavy > 0
+        l = rch.light
+        l_lo = GPUArr(l.lo); l_hi = GPUArr(l.hi); l_inptr = GPUArr(l.inptr); l_inids = GPUArr(l.inids)
+        l_invals = GPUArr(fill(T(-rc.rsign), length(l.inids)))
+        hv = rch.heavy
+        h_row = GPUArr(hv.row); h_lo = GPUArr(hv.lo); h_hi = GPUArr(hv.hi)
+        h_ptr = GPUArr(hv.ptr); h_ids = GPUArr(hv.ids)
+        h_invals = GPUArr(fill(T(-rc.rsign), length(hv.ids)))
+        ka_chunks = heavy_chunks(hv; chunk=HEAVY_CHUNK_KA)
+        ct_chunks = heavy_chunks(hv; chunk=HEAVY_CHUNK_CT)
+        ka_crow = GPUArr(ka_chunks.crow); ka_cptr = GPUArr(ka_chunks.cptr)
+        ct_crow = GPUArr(ct_chunks.crow); ct_cptr = GPUArr(ct_chunks.cptr)
+    end
+
     # 2-per-row arrays of Aᵀ (the 2×m slot matrices, shared by cuTile and KA)
     tpr_col2 = GPUArr(zoo.tpr_colidx)
     tpr_vals2 = GPUArr(repeat(T[1, -1], 1, size(zoo.tpr_colidx, 2)))
     @assert size(zoo.tpr_colidx, 2) == k && zoo.tpr_ncols == m
+    tpr_exact2 = all(>(0), zoo.tpr_colidx)   # every arc has a tail and a head
 
+    mats = split(get(ENV, "SPMM_MATS", "A,At"), ",")   # e.g. SPMM_MATS=At
     for (mat, csr, Amat) in (("A", csrA, A), ("At", csrAt, At))
+        mat in mats || continue
         mm, kk = size(Amat)
         for n in ns
             case = "flow $mat n=$n $T"
@@ -407,6 +482,76 @@ function main()
                                            rc_invals, Bx, T(1), T(0), Val(nb), Val(bt),
                                            Val(false); ndrange=grid))
                     end
+
+                    # hybrid rc + heavy rows ("rch"): rc kernels on the light
+                    # arrays, then the chunk partials and the reduce pass
+                    if nheavy > 0
+                        ct_part = GPUArr(zeros(T, bt ? (n, length(ct_chunks.crow)) :
+                                                       (length(ct_chunks.crow), n)))
+                        ka_part = GPUArr(zeros(T, bt ? (n, length(ka_chunks.crow)) :
+                                                       (length(ka_chunks.crow), n)))
+                        bench_cutile(case, "rch pm$lay", flops, Cd, ctx, α2, β2;
+                            cands=rc_tile_candidates(n),
+                            build=((tm, tn, tk, nw), bnz) -> begin
+                                light! = build_spmm_rc(T; tile_m=tm, tile_n=tn, tile_k=tk,
+                                                       pm=true, beta_nz=bnz, bt, num_warps=nw)
+                                part!, red! = build_cached(("heavy", T, tn, nw, true, bt),
+                                    () -> build_spmm_heavy(T; tile_n=tn, tile_k=HEAVY_TILE_K,
+                                        chunk=HEAVY_CHUNK_CT, pm=true, bt, num_warps=nw))
+                                (C, part, B, α, β) -> begin
+                                    light!(C, l_lo, l_hi, l_inptr, l_inids, rsign, B, α, β)
+                                    part!(part, ct_crow, ct_cptr, h_lo, h_hi, h_ptr, h_ids, rsign, B)
+                                    red!(C, part, h_row, ct_cptr, α)
+                                end
+                            end,
+                            launch=(f!, C, α, β) -> f!(C, ct_part, Bx, α, β))
+                        bench_cutile(case, "rch$lay", flops, Cd, ctx, α2, β2;
+                            cands=rc_tile_candidates(n),
+                            build=((tm, tn, tk, nw), bnz) -> begin
+                                light! = build_spmm_rc(T; tile_m=tm, tile_n=tn, tile_k=tk,
+                                                       pm=false, beta_nz=bnz, bt, num_warps=nw)
+                                part!, red! = build_cached(("heavy", T, tn, nw, false, bt),
+                                    () -> build_spmm_heavy(T; tile_n=tn, tile_k=HEAVY_TILE_K,
+                                        chunk=HEAVY_CHUNK_CT, pm=false, bt, num_warps=nw))
+                                (C, part, B, α, β) -> begin
+                                    light!(C, l_lo, l_hi, rc_rvals, l_inptr, l_inids, l_invals, B, α, β)
+                                    part!(part, ct_crow, ct_cptr, h_lo, h_hi, rc_rvals, h_ptr,
+                                          h_ids, h_invals, B)
+                                    red!(C, part, h_row, ct_cptr, α)
+                                end
+                            end,
+                            launch=(f!, C, α, β) -> f!(C, ct_part, Bx, α, β))
+                        hp_pm_ka! = heavy_partials_pm_ka!(KA.get_backend(Cd))
+                        hp_ka! = heavy_partials_ka!(KA.get_backend(Cd))
+                        hr_ka! = heavy_reduce_ka!(KA.get_backend(Cd))
+                        for nb in (1, 4, 8)
+                            n % nb == 0 || continue
+                            grid = ka_ndrange(mm, n ÷ nb, bt)
+                            pgrid = ka_ndrange(length(ka_chunks.crow), n ÷ nb, bt)
+                            rgrid = ka_ndrange(nheavy, n ÷ nb, bt)
+                            rch_pm! = (C, α, β, bnz) -> begin
+                                rc_pm_ka!(C, l_lo, l_hi, l_inptr, l_inids, Bx, α, β, rsign,
+                                          Val(nb), Val(bt), bnz; ndrange=grid)
+                                hp_pm_ka!(ka_part, ka_crow, ka_cptr, h_lo, h_hi, h_ptr, h_ids, Bx,
+                                          Val(nb), Val(bt); ndrange=pgrid)
+                                hr_ka!(C, ka_part, h_row, ka_cptr, α * rsign, Val(nb), Val(bt);
+                                       ndrange=rgrid)
+                            end
+                            bench_impl(case, "KA rch pm[nb=$nb$lay]", flops, Cd, ctx;
+                                f0=C -> rch_pm!(C, T(1), T(0), Val(false)),
+                                fab=C -> rch_pm!(C, α2, β2, Val(true)))
+                            bench_impl(case, "KA rch[nb=$nb$lay]", flops, Cd, ctx;
+                                f0=C -> begin
+                                    rc_ka!(C, l_lo, l_hi, rc_rvals, l_inptr, l_inids, l_invals, Bx,
+                                           T(1), T(0), Val(nb), Val(bt), Val(false); ndrange=grid)
+                                    hp_ka!(ka_part, ka_crow, ka_cptr, h_lo, h_hi, rc_rvals, h_ptr,
+                                           h_ids, h_invals, Bx, Val(nb), Val(bt); ndrange=pgrid)
+                                    hr_ka!(C, ka_part, h_row, ka_cptr, T(1), Val(nb), Val(bt);
+                                           ndrange=rgrid)
+                                end)
+                        end
+                        ct_part = ka_part = nothing
+                    end
                 else
                     # cuTile 2-per-row
                     bench_cutile(case, "2pr pm$lay", flops, Cd, ctx, α2, β2;
@@ -419,6 +564,22 @@ function main()
                         build=((tm, tn, nw), bnz) -> build_spmm_2pr(T; tile_m=tm,
                             tile_n=tn, pm=false, beta_nz=bnz, bt, num_warps=nw),
                         launch=(f!, C, α, β) -> f!(C, tpr_col2, tpr_vals2, Bx, α, β))
+                    # exactly-2-per-row variants: no id-0 checks on the B gather
+                    # (labels "… x2"); valid because every arc has both endpoints
+                    if tpr_exact2
+                        bench_cutile(case, "2pr pm x2$lay", flops, Cd, ctx, α2, β2;
+                            cands=zoo_tile_candidates(n; per_row=2),
+                            build=((tm, tn, nw), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                                tile_n=tn, pm=true, beta_nz=bnz, bt, num_warps=nw,
+                                exact2=true),
+                            launch=(f!, C, α, β) -> f!(C, tpr_col2, Bx, α, β))
+                        bench_cutile(case, "2pr x2$lay", flops, Cd, ctx, α2, β2;
+                            cands=zoo_tile_candidates(n; per_row=2),
+                            build=((tm, tn, nw), bnz) -> build_spmm_2pr(T; tile_m=tm,
+                                tile_n=tn, pm=false, beta_nz=bnz, bt, num_warps=nw,
+                                exact2=true),
+                            launch=(f!, C, α, β) -> f!(C, tpr_col2, tpr_vals2, Bx, α, β))
+                    end
                     # KA 2-per-row baselines, swept over NB columns per thread
                     tpr_pm_ka! = spmm_2pr_pm_ka!(KA.get_backend(Cd))
                     tpr_ka! = spmm_2pr_ka!(KA.get_backend(Cd))
@@ -427,12 +588,20 @@ function main()
                         grid = ka_ndrange(mm, n ÷ nb, bt)
                         bench_impl(case, "KA 2pr pm[nb=$nb$lay]", flops, Cd, ctx;
                             f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0), Val(nb),
-                                               Val(bt), Val(false); ndrange=grid),
+                                               Val(bt), Val(false), Val(false); ndrange=grid),
                             fab=C -> tpr_pm_ka!(C, tpr_col2, Bx, α2, β2, Val(nb),
-                                                Val(bt), Val(true); ndrange=grid))
+                                                Val(bt), Val(true), Val(false); ndrange=grid))
                         bench_impl(case, "KA 2pr[nb=$nb$lay]", flops, Cd, ctx;
                             f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bx, T(1), T(0),
-                                            Val(nb), Val(bt), Val(false);
+                                            Val(nb), Val(bt), Val(false), Val(false);
+                                            ndrange=grid))
+                        tpr_exact2 || continue
+                        bench_impl(case, "KA 2pr pm[nb=$nb x2$lay]", flops, Cd, ctx;
+                            f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0), Val(nb),
+                                               Val(bt), Val(false), Val(true); ndrange=grid))
+                        bench_impl(case, "KA 2pr[nb=$nb x2$lay]", flops, Cd, ctx;
+                            f0=C -> tpr_ka!(C, tpr_col2, tpr_vals2, Bx, T(1), T(0),
+                                            Val(nb), Val(bt), Val(false), Val(true);
                                             ndrange=grid))
                     end
                 end
@@ -455,6 +624,9 @@ function main()
                     end
                 end
 
+                # free eagerly: the next layout's set must not coexist with
+                # this one (5 C-sized arrays each; OOM on the 23M-row Aᵀ)
+                BACKEND == "cuda" && foreach(CUDA.unsafe_free!, (Bx, Cd, C0, Cref, Cref2))
                 Bx = Cd = C0 = Cref = Cref2 = ctx = nothing
                 GC.gc()
                 BACKEND == "cuda" && CUDA.reclaim()

@@ -33,8 +33,19 @@ include(joinpath(@__DIR__, "spmm_specs.jl"))
 "Gather the (TILE_M, TILE_N) B block for the (TILE_M, 1)-shaped column-id
 tile `cols`; `BT` picks the transposed layout (B is n×k, the rhs columns
 contiguous). Ids ≤ 0 bounds-mask to zero rows either way."
-@inline gather_b(B, cols, ncols, BT::Bool) =
-    BT ? ct.gather(B, (ncols, cols)) : ct.gather(B, (cols, ncols))
+@inline gather_b(B, cols, ncols, BT::Bool, check_bounds::Bool=true) =
+    BT ? ct.gather(B, (ncols, cols); check_bounds) :
+         ct.gather(B, (cols, ncols); check_bounds)
+
+"""
+Slot ids for the 2-per-row kernels. With `EXACT2` every row is known to
+hold two entries (the incidence matrix: each arc has a tail and a head), so
+the ids need no bounds-masking on the B gather; the rows past m that
+`eachtile` pads with 0 are clamped to row 1 of B instead (their result is
+discarded by the masked store). Without it, id 0 bounds-masks to a zero
+row of B.
+"""
+@inline slot_ids(j, EXACT2::Bool) = EXACT2 ? max.(j, Int32(1)) : j
 
 """
 Number of jagged diagonals reaching row `i0`. Rows are sorted by decreasing
@@ -84,16 +95,16 @@ function spmm_2pr_pm_kernel(C::ct.TileArray{T, 2},
                             colidx::ct.TileArray{Int32, 2},
                             B::ct.TileArray{T, 2},
                             alpha::T, beta::T, TILE_M::Int, TILE_N::Int,
-                            BETA_NZ::Bool, BT::Bool) where {T}
+                            BETA_NZ::Bool, BT::Bool, EXACT2::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     slots = ct.eachtile(colidx, (1, TILE_M); padding_mode=ct.PaddingMode.Zero)
-    j1 = ct.load(slots, (Int32(1), bm))      # rows past m pad 0
-    j2 = ct.load(slots, (Int32(2), bm))
+    j1 = slot_ids(ct.load(slots, (Int32(1), bm)), EXACT2)   # rows past m pad 0
+    j2 = slot_ids(ct.load(slots, (Int32(2), bm)), EXACT2)
     ncols = reshape(tile_span(bn, TILE_N), (1, TILE_N))
     # column id 0 (absent) bounds-masks to a zero row of B
-    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT)
-    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT)
+    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT, !EXACT2)
+    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT, !EXACT2)
     spmm_epilogue(C, bm, bn, b1 .- b2, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
@@ -105,18 +116,18 @@ function spmm_2pr_kernel(C::ct.TileArray{T, 2},
                          vals::ct.TileArray{T, 2},
                          B::ct.TileArray{T, 2},
                          alpha::T, beta::T, TILE_M::Int, TILE_N::Int,
-                         BETA_NZ::Bool, BT::Bool) where {T}
+                         BETA_NZ::Bool, BT::Bool, EXACT2::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
     slots = ct.eachtile(colidx, (1, TILE_M); padding_mode=ct.PaddingMode.Zero)
     vslots = ct.eachtile(vals, (1, TILE_M); padding_mode=ct.PaddingMode.Zero)
-    j1 = ct.load(slots, (Int32(1), bm))
-    j2 = ct.load(slots, (Int32(2), bm))
+    j1 = slot_ids(ct.load(slots, (Int32(1), bm)), EXACT2)
+    j2 = slot_ids(ct.load(slots, (Int32(2), bm)), EXACT2)
     v1 = ct.load(vslots, (Int32(1), bm))
     v2 = ct.load(vslots, (Int32(2), bm))
     ncols = reshape(tile_span(bn, TILE_N), (1, TILE_N))
-    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT)
-    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT)
+    b1 = gather_b(B, reshape(j1, (TILE_M, 1)), ncols, BT, !EXACT2)
+    b2 = gather_b(B, reshape(j2, (TILE_M, 1)), ncols, BT, !EXACT2)
     acc = reshape(v1, (TILE_M, 1)) .* b1 .+ reshape(v2, (TILE_M, 1)) .* b2
     spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
@@ -183,34 +194,41 @@ function spmm_jds_kernel(C::ct.TileArray{T, 2},
 end
 
 """
-    build_spmm_2pr(T; tile_m, tile_n, pm, beta_nz) -> spmm!
+    build_spmm_2pr(T; tile_m, tile_n, pm, beta_nz, bt, exact2) -> spmm!
 
 Compile a Matrix2PerRow{PM} SpMM kernel (`bt = true` for the transposed
-n×k B layout). The launcher is
+n×k B layout; `exact2 = true` asserts two entries in every row and drops
+the B-gather bounds checks, which also needs `tile_n` to divide n). The
+launcher is
 `spmm!(C, colidx, B, α, β)` for `pm = true` and
 `spmm!(C, colidx, vals, B, α, β)` otherwise, with `colidx`/`vals` the
 2×m slot matrices.
 """
 function build_spmm_2pr(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
-                        beta_nz::Bool, bt::Bool=false, num_warps::Int=4) where {T}
+                        beta_nz::Bool, bt::Bool=false, num_warps::Int=4,
+                        exact2::Bool=false) where {T}
     consts = (ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
-              ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
+              ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt},
+              ct.Constant{Bool, exact2})
     grid = bt ? spmm_grid_t : spmm_grid
+    # unchecked gathers read B[:, col] for every tile column, so n % tile_n == 0
+    checkn(B) = !exact2 || size(B, bt ? 1 : 2) % tile_n == 0 ||
+        throw(ArgumentError("exact2 needs tile_n = $tile_n to divide n = $(size(B, bt ? 1 : 2))"))
     if pm
         k = TritonRun.triton_kernel(spmm_2pr_pm_kernel,
             Tuple{spmm_ta2(T), spmm_ta2(Int32), spmm_ta2(T), T, T, consts...};
-            name="spmm_2pr_pm", num_warps)
+            name=exact2 ? "spmm_2pr_pm_x2" : "spmm_2pr_pm", num_warps)
         return (C, colidx, B, α, β) ->
-            TritonRun.launch!(k, grid(C, tile_m, tile_n),
-                              C, colidx, B, T(α), T(β))
+            (checkn(B); TritonRun.launch!(k, grid(C, tile_m, tile_n),
+                                          C, colidx, B, T(α), T(β)))
     else
         k = TritonRun.triton_kernel(spmm_2pr_kernel,
             Tuple{spmm_ta2(T), spmm_ta2(Int32), spmm_ta2(T), spmm_ta2(T), T, T,
                   consts...};
-            name="spmm_2pr", num_warps)
+            name=exact2 ? "spmm_2pr_x2" : "spmm_2pr", num_warps)
         return (C, colidx, vals, B, α, β) ->
-            TritonRun.launch!(k, grid(C, tile_m, tile_n),
-                              C, colidx, vals, B, T(α), T(β))
+            (checkn(B); TritonRun.launch!(k, grid(C, tile_m, tile_n),
+                                          C, colidx, vals, B, T(α), T(β)))
     end
 end
 
@@ -369,6 +387,145 @@ function build_spmm_rc(::Type{T}; tile_m::Int, tile_n::Int, tile_k::Int, pm::Boo
             TritonRun.launch!(k, grid(C, tile_m, tile_n),
                               C, lo, hi, rvals, inptr, inids, invals, B, T(α), T(β))
     end
+end
+
+# --- heavy rows of a range+CSR matrix: chunk-parallel partial sums ----------
+#
+# Rows far longer than the rest (the max-flow source/sink nodes of the vision
+# instances: ~92k entries vs ≤ 14) serialize a row-per-program kernel on one
+# program. The hybrid ("rch") keeps those rows empty in the rc arrays and
+# handles them here: pass 1 splits each heavy row's [range; scattered]
+# sequence into CHUNK-entry chunks (chunk c of heavy row h = crow[c], local
+# index c - cptr[h]) and writes one partial row of n sums per chunk; pass 2
+# sums the chunks of each heavy row into C (which the rc kernel has already
+# set to α·0 + β·C for those rows).
+
+@inline function heavy_accumulate(weights, crow, cptr, hlo, hhi, hptr, hids, B, c, bn,
+                                  BT::Bool, TILE_N::Int, TILE_K::Int, CHUNK::Int,
+                                  ::Type{T}) where {T}
+    cs = tile_span(c, 1)                                  # (1,) chunk index
+    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
+    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
+    h1 = ct.gather(crow, cs)
+    k01 = (cs .- ct.gather(cptr, h1)) .* Int32(CHUNK)     # first entry of this chunk
+    lo1 = ct.gather(hlo, h1); rlen1 = ct.gather(hhi, h1) .- lo1
+    p01 = ct.gather(hptr, h1); slen1 = ct.gather(hptr, h1 .+ Int32(1)) .- p01
+    k0 = reshape(k01, (1, 1)); los = reshape(lo1, (1, 1)); rlen = reshape(rlen1, (1, 1))
+    p0 = reshape(p01, (1, 1)); slen = reshape(slen1, (1, 1))
+    acc = zeros(T, (1, TILE_N))
+    for t in Int32(1):Int32(CHUNK ÷ TILE_K)
+        kk = (k0 .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
+        inrange = kk .< rlen
+        ptrs = (p0 .- rlen) .+ kk
+        smask = (kk .>= rlen) .& (kk .< rlen .+ slen)
+        sids = ct.gather(hids, ptrs; mask=smask, padding_value=Int32(0))
+        ids = ifelse.(inrange, los .+ kk, sids)           # 0 past the row: masked B row
+        w = weights(ids, inrange, ptrs, smask)
+        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, 1, TILE_K, TILE_N)
+    end
+    return acc
+end
+
+function spmm_heavy_pm_kernel(part::ct.TileArray{T, 2}, crow::ct.TileArray{Int32, 1},
+                              cptr::ct.TileArray{Int32, 1}, hlo::ct.TileArray{Int32, 1},
+                              hhi::ct.TileArray{Int32, 1}, hptr::ct.TileArray{Int32, 1},
+                              hids::ct.TileArray{Int32, 1}, B::ct.TileArray{T, 2},
+                              rsign::T, TILE_N::Int, TILE_K::Int, CHUNK::Int,
+                              BT::Bool) where {T}
+    c = ct.bid(1)
+    bn = ct.bid(2)
+    weights = (ids, inrange, ptrs, smask) -> ifelse.(inrange, rsign, -rsign)
+    acc = heavy_accumulate(weights, crow, cptr, hlo, hhi, hptr, hids, B, c, bn, BT,
+                           TILE_N, TILE_K, CHUNK, T)
+    spmm_epilogue(part, c, bn, acc, one(T), zero(T), 1, TILE_N, false, BT)
+    return
+end
+
+function spmm_heavy_kernel(part::ct.TileArray{T, 2}, crow::ct.TileArray{Int32, 1},
+                           cptr::ct.TileArray{Int32, 1}, hlo::ct.TileArray{Int32, 1},
+                           hhi::ct.TileArray{Int32, 1}, rvals::ct.TileArray{T, 1},
+                           hptr::ct.TileArray{Int32, 1}, hids::ct.TileArray{Int32, 1},
+                           hinvals::ct.TileArray{T, 1}, B::ct.TileArray{T, 2},
+                           TILE_N::Int, TILE_K::Int, CHUNK::Int, BT::Bool) where {T}
+    c = ct.bid(1)
+    bn = ct.bid(2)
+    weights = (ids, inrange, ptrs, smask) ->
+        ct.gather(rvals, ids; mask=inrange) .+ ct.gather(hinvals, ptrs; mask=smask)
+    acc = heavy_accumulate(weights, crow, cptr, hlo, hhi, hptr, hids, B, c, bn, BT,
+                           TILE_N, TILE_K, CHUNK, T)
+    spmm_epilogue(part, c, bn, acc, one(T), zero(T), 1, TILE_N, false, BT)
+    return
+end
+
+"Pass 2: C[hrow[h], :] += alpha · Σ chunks of h. One program per (heavy row,
+column block), TILE_C chunk partials per step."
+function spmm_heavy_reduce_kernel(C::ct.TileArray{T, 2}, part::ct.TileArray{T, 2},
+                                  hrow::ct.TileArray{Int32, 1}, cptr::ct.TileArray{Int32, 1},
+                                  alpha::T, TILE_C::Int, TILE_N::Int, BT::Bool) where {T}
+    h = ct.bid(1)
+    bn = ct.bid(2)
+    hs = tile_span(h, 1)
+    c01 = ct.gather(cptr, hs)
+    c11 = ct.gather(cptr, hs .+ Int32(1))
+    nt = cld(maximum(c11 .- c01), Int32(TILE_C))
+    c0 = reshape(c01, (1, 1)); c1 = reshape(c11, (1, 1))
+    ncols = reshape(tile_span(bn, TILE_N), (1, TILE_N))
+    cidx = reshape(ct.arange(TILE_C) .- Int32(1), (TILE_C, 1))
+    acc = zeros(T, (TILE_C, TILE_N))
+    for t in Int32(1):nt
+        cc = (c0 .+ (t - Int32(1)) * Int32(TILE_C)) .+ cidx
+        mask = (cc .< c1) .& (ncols .> Int32(0))
+        acc = acc .+ (BT ? ct.gather(part, (ncols, cc); mask) : ct.gather(part, (cc, ncols); mask))
+    end
+    s = sum(acc; dims=1)
+    rows = reshape(ct.gather(hrow, hs), (1, 1))
+    if BT
+        ct.scatter(C, (ncols, rows), ct.gather(C, (ncols, rows)) .+ alpha .* s)
+    else
+        ct.scatter(C, (rows, ncols), ct.gather(C, (rows, ncols)) .+ alpha .* s)
+    end
+    return
+end
+
+"""
+    build_spmm_heavy(T; tile_n, tile_k, chunk, pm, bt) -> (partials!, reduce!)
+
+Heavy-row passes of the hybrid range+CSR format.
+`partials!(part, crow, cptr, hlo, hhi, hptr, hids, rsign, B)` (pm) /
+`partials!(part, crow, cptr, hlo, hhi, rvals, hptr, hids, hinvals, B)` fills
+the (nchunks × n; n × nchunks when `bt`) partial matrix;
+`reduce!(C, part, hrow, cptr, α)` adds the heavy rows into C. `chunk`
+(a multiple of `tile_k`) is the number of nonzeros per chunk.
+"""
+function build_spmm_heavy(::Type{T}; tile_n::Int, tile_k::Int, chunk::Int, pm::Bool,
+                          bt::Bool=false, num_warps::Int=4, tile_c::Int=64) where {T}
+    chunk % tile_k == 0 || throw(ArgumentError("chunk must be a multiple of tile_k"))
+    i1 = spmm_ta1(Int32); t1 = spmm_ta1(T); t2 = spmm_ta2(T)
+    consts = (ct.Constant{Int, tile_n}, ct.Constant{Int, tile_k}, ct.Constant{Int, chunk},
+              ct.Constant{Bool, bt})
+    grid(part, nrows) = (Int(nrows), cld(size(part, bt ? 1 : 2), tile_n))
+    partials! = if pm
+        k = TritonRun.triton_kernel(spmm_heavy_pm_kernel,
+            Tuple{t2, i1, i1, i1, i1, i1, i1, t2, T, consts...};
+            name="spmm_heavy_pm", num_warps)
+        (part, crow, cptr, hlo, hhi, hptr, hids, rsign, B) ->
+            TritonRun.launch!(k, grid(part, length(crow)),
+                              part, crow, cptr, hlo, hhi, hptr, hids, B, T(rsign))
+    else
+        k = TritonRun.triton_kernel(spmm_heavy_kernel,
+            Tuple{t2, i1, i1, i1, i1, t1, i1, i1, t1, t2, consts...};
+            name="spmm_heavy", num_warps)
+        (part, crow, cptr, hlo, hhi, rvals, hptr, hids, hinvals, B) ->
+            TritonRun.launch!(k, grid(part, length(crow)),
+                              part, crow, cptr, hlo, hhi, rvals, hptr, hids, hinvals, B)
+    end
+    kr = TritonRun.triton_kernel(spmm_heavy_reduce_kernel,
+        Tuple{t2, t2, i1, i1, T, ct.Constant{Int, tile_c}, ct.Constant{Int, tile_n},
+              ct.Constant{Bool, bt}};
+        name="spmm_heavy_reduce", num_warps)
+    reduce! = (C, part, hrow, cptr, α) ->
+        TritonRun.launch!(kr, grid(part, length(hrow)), C, part, hrow, cptr, T(α))
+    return partials!, reduce!
 end
 
 # rc candidates: (tile_m, tile_n, tile_k, num_warps); each iteration gathers

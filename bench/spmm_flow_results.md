@@ -80,6 +80,12 @@ Implementations:
 8. **General α/β (reading C)** costs the KA pm kernels 30–40%, cuTile 2pr
    ~40%, cuSPARSE 17–50%.
 
+**Larger instance (follow-up 6):** on `vision_rnd_05` (4.5× TX, two rows
+with 92k entries) the row-parallel kernels collapse to 0.15–0.6× cuSPARSE
+on A·B until the heavy rows are peeled into chunk-parallel partial sums;
+the resulting hybrid ("rch") reaches 568 GFLOP/s (KA) / 541 (cuTile) at
+n=64, 2× cuSPARSE. Aᵀ·B is unaffected (541 / 531, 2.6× cuSPARSE).
+
 ## Timing-method note
 
 Job 7972's numbers (first version of this file) used a host clock around
@@ -374,6 +380,139 @@ A·B, β = 0, GFLOP/s (n = 8 / 64 / 256):
   32-byte sector) per B row. cuTile 2pr pm `t` hits 455 at n=64 (`16×64`,
   8 warps) but 392 at n=256; standard layout `16×32` @ 8 warps: 424 / 425.
 
+## Follow-up 5: dropping the "slot empty" checks in 2pr (job 8010)
+
+Every row of Aᵀ has exactly two entries (each arc has a tail and a head),
+so the `j > 0` tests in the KA 2pr kernels and the bounds-masked B gather
+in the cuTile kernels (id 0 → zero row) are provably never needed. The
+`x2` variants drop them: KA via a `Val{EXACT2}` that turns `slot_present`
+into `true`; cuTile via `check_bounds=false` on the B gathers (pad rows
+past m are clamped to B row 1 and discarded by the masked store; needs
+`tile_n | n`). Aᵀ·B, β = 0, GFLOP/s at n = 8 / 64 / 256, best config:
+
+| | checked | `x2` |
+|---|---|---|
+| KA 2pr pm nb=1 | 434 / 440 / 441 | 436 / 442 / 443 |
+| KA 2pr pm nb=4 `t` | 390 / 468 / 473 | 392 / 468 / 473 |
+| KA 2pr pm nb=8 `t` | 383 / 474 / **480** | 387 / 443 / 385 |
+| KA 2pr vals nb=8 `t` | 337 / 463 / 477 | 340 / 440 / 406 |
+| cuTile 2pr pm | 387 / 424 / 424 | 384 / 424 / 424 |
+| cuTile 2pr pm `t` | 392 / 455 / 392 | 387 / 457 / 411 |
+| cuTile 2pr vals `t` | 348 / 443 / 377 | 349 / 446 / 403 |
+
+- **No gain.** Where the kernels are at their best the difference is
+  within ±1%: the checks are warp-uniform branches (KA) or a compare
+  folded into the load predicate (cuTile), and the kernels are bound by
+  the B-row gathers, not by instruction count. This matches follow-up 3,
+  where removing the bounds check (V2) was also worth ~0.
+- The one large difference is negative: KA nb=8 `t` loses 20% without the
+  branches (480 → 385 at n=256), reproducibly across nb=8 pm and vals.
+  The likely cause is instruction scheduling — with the loads
+  unconditional the compiler is free to issue both 8-wide row loads back
+  to back and the resulting schedule is worse — but I have not confirmed
+  that in the SASS. (The `t` cuTile variants gain 5–7% at n=256 but stay
+  below KA's 480.)
+- Practical conclusion: keep the checks; the exact-2 knowledge is not
+  worth a format or a kernel variant. (A default argument
+  `::Val{EXACT2}=Val(false)` on the `@kernel` silently cost the checked
+  kernels 7× — KA generates a poorly specialized wrapper for it — so the
+  flag is passed explicitly.)
+
+## Follow-up 6: a larger instance — vision_rnd_05 — and the hybrid "rch" format (jobs 8012, 8013)
+
+`vision_rnd_05_bone_subx_n6c100_a` (Kovács' VISION-RND family, a max-flow
+problem on a 3-D 6-neighbourhood grid turned into min-cost flow): 3.9M
+nodes, 23.1M arcs, A = 3,899,394 × 23,091,149 with 46.2M nonzeros — 4.5×
+the TX matrix. Exported with `bench/export_flow_matrix.jl`, run with
+`SPMM_DATA=vision_rnd_05`; n = 8 and 64 only (at n = 256 the Aᵀ·B bench
+needs four 23.6 GB C-sized arrays, more than the L40S has).
+
+The structural difference from the road network: every pixel row of A has
+≤ 14 entries (6 in, 6 out, terminal arcs), but the two max-flow terminal
+nodes have **92,626 entries between them** (max contiguous range 90,916,
+max scattered 1,710), vs a maximum row length of 8 on TX. On a row-parallel
+kernel those two rows are the critical path: one thread (KA) or one
+16-row program (cuTile) walks 92k entries while everything else finishes.
+
+### The hybrid
+
+"rch" = range + CSR + heavy rows (`split_heavy` / `heavy_chunks` in
+`bench/spmm_formats.jl`): rows longer than `SPMM_HEAVY_MAXLEN` (64) are
+emptied in the rc arrays — the unchanged rc kernel still writes
+α·0 + β·C for them — and collected separately with their range and
+scattered ids. Two small passes then handle them with nonzero-level
+parallelism: pass 1 splits each heavy row into chunks (KA: 64 entries
+per thread, interleaved so consecutive threads read consecutive B rows
+of the range; cuTile: 256 contiguous entries per program, `tile_k` = 32
+rows of B per step) and writes one partial sum per (chunk, column); pass 2
+sums a row's chunks and adds α·Σ into C. The heavy part is 0.2% of the
+nonzeros and deterministic (no atomics; the two extra launches are not
+timed separately). On TX no row exceeds the cap, so rch degenerates to rc
+and is skipped.
+
+### A·B (nodes×arcs), β = 0, GFLOP/s at n = 8 / 64 (job 8012; best config)
+
+| | standard layout | transposed (`t`) |
+|---|---|---|
+| **KA rch pm** | 242 / 247 (nb=1), 349 / 368 (nb=4) | 423 / **568** (nb=1) |
+| **cuTile rch pm** | 390 / 394 `16×8×1`, 8 warps | **427** / 541 `16×8×2` → `16×64×2` |
+| KA rch vals | 272 / 282 (nb=4) | 354 / 545 (nb=1) |
+| cuTile rch vals | 336 / 358 | 381 / 530 |
+| KA rc pm | 160 / 233 (nb=1) | 171 / 488 (nb=1) |
+| cuTile rc pm | 110 / 299 | 80 / 283 |
+| KA jds pm | 50 / 152 (nb=1) | 23 / 149 |
+| cuTile jds pm | 38 / 194 | 21 / 129 |
+| cuTile csr | 205 / 164 `1×8×32`, `1×64×64` | – |
+| cuSPARSE | 271 / 283 | – |
+| KA csr | 39 / 93 | – |
+
+- **Without the split every row-parallel kernel loses to cuSPARSE**, by
+  up to 7× at n=8 (KA jds pm 50, cuTile jds pm 38 vs 271). cuSPARSE
+  load-balances over nonzeros; our kernels balance over rows. Among the
+  unsplit kernels cuTile csr is the least affected (205 at n=8) because
+  it consumes `tile_k` = 32 entries of the long row per loop step instead
+  of one, and rc is next (its range half is a contiguous strip).
+  Interleaving columns per thread makes it *worse* (KA jds nb=8: 16) —
+  the serial tail grows with nb.
+- **With the split, the picture from TX returns**: KA rch pm `t` **568**
+  and cuTile rch pm `t` 541 at n=64 are **2.0× / 1.9× cuSPARSE** (283),
+  and at n=8 cuTile rch pm `t` 427 and KA 423 are 1.6×. The light part of
+  vision is actually friendlier than TX (regular degree ~12, no short
+  rows), so at n=64 both beat their own TX numbers (386 / 342).
+- The cuTile heavy kernels are the same tile code as rc with `TILE_M = 1`
+  (`heavy_accumulate` reuses `gather_b_wsum`), plus a 30-line reduce
+  kernel using a 2-D `gather`/`scatter` on C; the TileTriton emitter
+  handled the size-1 tile dimensions and the `(1, TILE_N)` partial store
+  without changes.
+- Standard layout: cuTile rch pm (394) > KA rch pm nb=4 (368) > cuSPARSE
+  (283); KA nb=1 falls to 247 here (on TX it was the best at 386): with
+  23M-entry index arrays and a 125 MB B (larger than the 96 MB L2 at n=8)
+  one float per thread per B row is too little per gather, and nb=4 or the
+  transposed layout is needed.
+- α/β path (reads C): KA rch pm nb=4 316 / 331 standard, cuTile rch pm
+  297 / 299; cuSPARSE 186 / 190.
+
+### Aᵀ·B (arcs×nodes, exactly 2 per row), β = 0, GFLOP/s at n = 8 / 64 (job 8013)
+
+| | standard layout | transposed (`t`) |
+|---|---|---|
+| KA 2pr pm | 436 / 435 (nb=8) | 458 / **541** (nb=8) |
+| cuTile 2pr pm | 459 / 531 `32×8×4`, `16×32×8` | **468** / 517 |
+| KA 2pr vals | 377 / 376 (nb=8) | 396 / 524 (nb=8) |
+| cuTile 2pr vals | 408 / 500 | 402 / 505 |
+| cuTile csr | 325 / 244 | – |
+| cuSPARSE | 190 / 206 | – |
+| KA csr | 99 / 99 | – |
+
+- Nothing changes structurally (every row has two entries), and the 2pr
+  kernels are 2.5–2.6× cuSPARSE as on TX. Two shifts with size: cuTile 2pr
+  pm now **beats KA in the standard layout** (531 vs 435 at n=64 — the
+  16×32 tile gathers 32 columns of a B row at once, while KA nb=1 drops
+  to 227 for the same per-gather-width reason as above), and the transposed
+  layout is worth less to cuTile than on TX (517 vs 531).
+- `x2` (follow-up 5) again makes no difference: cuTile 2pr pm x2 459 /
+  530 vs 459 / 531; KA nb=8 `t` x2 462 / 518 vs 458 / 541.
+
 ## Reproducing
 
 ```
@@ -382,9 +521,12 @@ CUTILE_BACKEND=native julia --project=. bench/spmm_backends.jl 8 64 256  # then 
 python3 bench/spmm_flow_tables.py ~/spmm-flow-<job>.log  # the tables above
 ```
 
-`bench/data/` (gitignored, ~270 MB) is regenerated from the DIMACS files in
-`~/min-cost-flow/road/` with MinimumCostFlows: read the problem, then
-serialize `SparseMatrixCSC{Float32}` of A and Aᵀ as `flow_TX{,_t}.jls` and
-the raw `JDSMatrixPM`/`Matrix2PerRowPM` arrays as `flow_TX_zoo.jls`
-(NamedTuple with fields `jds_colidx, jds_iterptr, jds_nrows, jds_ncols,
-tpr_colidx, tpr_ncols`) — see the header of `bench/spmm_flow.jl`.
+`bench/data/` (gitignored; ~270 MB for TX, 1.2 GB for vision_rnd_05) is
+regenerated from the DIMACS files in `~/min-cost-flow/{road,vision}/` with
+`bench/export_flow_matrix.jl <name> <files...>` in an environment that has
+MinimumCostFlows (the road a–e files are parts of one instance; the vision
+a–e files are cost variants of one graph, use one). It serializes
+`SparseMatrixCSC{Float32}` of A and Aᵀ as `<name>{,_t}.jls` and the raw
+`JDSMatrixPM`/`Matrix2PerRowPM` arrays as `<name>_zoo.jls`. Select with
+`SPMM_DATA=<name>`; `SPMM_MATS=A|At` runs one side only; the hybrid's cap
+and chunk sizes are `SPMM_HEAVY_MAXLEN`, `SPMM_HEAVY_CHUNK_KA/CT`.
