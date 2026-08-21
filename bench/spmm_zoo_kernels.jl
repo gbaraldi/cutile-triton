@@ -257,23 +257,53 @@ end
 # range (the arcs of that endpoint, one sign) plus a scattered list (the
 # arcs of the other endpoint, the opposite sign). The range needs no column
 # ids at all — its B rows are a dense strip — so only the scattered half is
-# a CSR. `lo`/`hi` bound the range per row (hi exclusive), `rsign` is the
+# a CSR. The kernels walk the k-th nonzero of every row in one loop (see
+# rc_accumulate), so a tile costs as many iterations as its longest row. `lo`/`hi` bound the range per row (hi exclusive), `rsign` is the
 # value of the range entries (the scattered ones are -rsign). The vals
 # variant carries `rvals` indexed by column (each column lies in exactly one
 # range) and `invals` per scattered entry instead.
-
-"Gather the (TILE_M, TILE_K, TILE_N) B block for the (TILE_M, TILE_K) id
-tile and sum it over K; ids ≤ 0 bounds-mask to zero rows (see gather_b)."
-@inline function gather_b_sum(B, ids, ncols3, BT::Bool, TILE_M::Int, TILE_K::Int, TILE_N::Int)
-    ids3 = reshape(ids, (TILE_M, TILE_K, 1))
-    bt = BT ? ct.gather(B, (ncols3, ids3)) : ct.gather(B, (ids3, ncols3))
-    return reshape(sum(bt; dims=2), (TILE_M, TILE_N))
-end
 
 @inline function gather_b_wsum(B, ids, w, ncols3, BT::Bool, TILE_M::Int, TILE_K::Int, TILE_N::Int)
     ids3 = reshape(ids, (TILE_M, TILE_K, 1))
     bt = BT ? ct.gather(B, (ncols3, ids3)) : ct.gather(B, (ids3, ncols3))
     return reshape(sum(reshape(w, (TILE_M, TILE_K, 1)) .* bt; dims=2), (TILE_M, TILE_N))
+end
+
+"""
+Range + CSR body shared by the pm and vals kernels: one loop over the
+k-th nonzero of each row, k = 0 … total−1. Entry k is `lo + k` while
+k < rangelen (no id load) and the CSR entry `inids[p0 + k − rangelen]`
+after that. Since A's rows are sorted by total length, a tile's trip count
+is its longest row — the same lane utilisation as JDS, with half the id
+gathers gone. `body(ids, inrange, ptrs, smask)` returns the weights for
+the (TILE_M, TILE_K) block.
+"""
+@inline function rc_accumulate(weights, lo, hi, inptr, inids, B, bm, bn, BT::Bool,
+                               TILE_M::Int, TILE_N::Int, TILE_K::Int, ::Type{T}) where {T}
+    rows = tile_span(bm, TILE_M)
+    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
+    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
+    lo1 = ct.gather(lo, rows)                              # rows past m pad 0 → empty
+    rlen1 = ct.gather(hi, rows) .- lo1
+    p01 = ct.gather(inptr, rows)
+    slen1 = ct.gather(inptr, rows .+ Int32(1)) .- p01
+    nk = cld(maximum(rlen1 .+ slen1), Int32(TILE_K))
+    los = reshape(lo1, (TILE_M, 1))
+    rlen = reshape(rlen1, (TILE_M, 1))
+    p0 = reshape(p01, (TILE_M, 1))
+    slen = reshape(slen1, (TILE_M, 1))
+    acc = zeros(T, (TILE_M, TILE_N))
+    for t in Int32(1):nk
+        kk = ((t - Int32(1)) * Int32(TILE_K)) .+ ks            # (1, TILE_K)
+        inrange = kk .< rlen                                   # (TILE_M, TILE_K)
+        ptrs = (p0 .- rlen) .+ kk
+        smask = (kk .>= rlen) .& (kk .< rlen .+ slen)
+        sids = ct.gather(inids, ptrs; mask=smask, padding_value=Int32(0))
+        ids = ifelse.(inrange, los .+ kk, sids)                # 0 → zero row of B
+        w = weights(ids, inrange, ptrs, smask)
+        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    end
+    return acc
 end
 
 function spmm_rc_pm_kernel(C::ct.TileArray{T, 2},
@@ -284,29 +314,11 @@ function spmm_rc_pm_kernel(C::ct.TileArray{T, 2},
                            BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
-    rows = tile_span(bm, TILE_M)
-    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
-    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
-    # contiguous range: the ids are the range itself (rows past m pad 0 → empty)
-    los = reshape(ct.gather(lo, rows), (TILE_M, 1))
-    his = reshape(ct.gather(hi, rows), (TILE_M, 1))
-    acc = zeros(T, (TILE_M, TILE_N))
-    for t in Int32(1):cld(maximum(his - los), Int32(TILE_K))
-        ids = (los .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
-        ids = ifelse.(ids .< his, ids, Int32(0))
-        acc = acc .+ gather_b_sum(B, ids, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    # range entries rsign, scattered ones -rsign (ids of 0 contribute nothing)
+    acc = rc_accumulate(lo, hi, inptr, inids, B, bm, bn, BT, TILE_M, TILE_N, TILE_K, T) do ids, inrange, ptrs, smask
+        ifelse.(inrange, rsign, -rsign)
     end
-    # scattered columns: a CSR
-    p0 = reshape(ct.gather(inptr, rows), (TILE_M, 1))
-    p1 = reshape(ct.gather(inptr, rows .+ Int32(1)), (TILE_M, 1))
-    acc2 = zeros(T, (TILE_M, TILE_N))
-    for t in Int32(1):cld(maximum(p1 - p0), Int32(TILE_K))
-        ptrs = (p0 .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
-        ids = ct.gather(inids, ptrs; mask=ptrs .< p1, padding_value=Int32(0))
-        acc2 = acc2 .+ gather_b_sum(B, ids, ncols3, BT, TILE_M, TILE_K, TILE_N)
-    end
-    spmm_epilogue(C, bm, bn, rsign .* (acc .- acc2), alpha, beta,
-                  TILE_M, TILE_N, BETA_NZ, BT)
+    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
 end
 
@@ -320,26 +332,9 @@ function spmm_rc_kernel(C::ct.TileArray{T, 2},
                         BETA_NZ::Bool, BT::Bool) where {T}
     bm = ct.bid(1)
     bn = ct.bid(2)
-    rows = tile_span(bm, TILE_M)
-    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
-    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
-    los = reshape(ct.gather(lo, rows), (TILE_M, 1))
-    his = reshape(ct.gather(hi, rows), (TILE_M, 1))
-    acc = zeros(T, (TILE_M, TILE_N))
-    for t in Int32(1):cld(maximum(his - los), Int32(TILE_K))
-        ids = (los .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
-        ids = ifelse.(ids .< his, ids, Int32(0))
-        w = ct.gather(rvals, ids)                 # id 0 bounds-masks to 0
-        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, TILE_M, TILE_K, TILE_N)
-    end
-    p0 = reshape(ct.gather(inptr, rows), (TILE_M, 1))
-    p1 = reshape(ct.gather(inptr, rows .+ Int32(1)), (TILE_M, 1))
-    for t in Int32(1):cld(maximum(p1 - p0), Int32(TILE_K))
-        ptrs = (p0 .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
-        kmask = ptrs .< p1
-        ids = ct.gather(inids, ptrs; mask=kmask, padding_value=Int32(0))
-        w = ct.gather(invals, ptrs; mask=kmask)
-        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    acc = rc_accumulate(lo, hi, inptr, inids, B, bm, bn, BT, TILE_M, TILE_N, TILE_K, T) do ids, inrange, ptrs, smask
+        # range weights by column id (masked to the range), scattered by entry
+        ct.gather(rvals, ids; mask=inrange) .+ ct.gather(invals, ptrs; mask=smask)
     end
     spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
     return
@@ -378,8 +373,8 @@ end
 
 # rc candidates: (tile_m, tile_n, tile_k, num_warps); each iteration gathers
 # tile_k B rows per C row, so tile_k plays per_row's role in the cap.
-rc_tile_candidates(n; tile_k=4) =
-    [(tm, tn, tile_k, nw) for (tm, tn, nw) in zoo_tile_candidates(n; per_row=tile_k)]
+rc_tile_candidates(n; tile_ks=(1, 2)) =
+    [(tm, tn, tk, nw) for tk in tile_ks for (tm, tn, nw) in zoo_tile_candidates(n; per_row=tk)]
 
 # Candidate (tile_m, tile_n, num_warps) configs. The register footprint is
 # capped at 4096 gathered B elements per program at 4 warps (`per_row` B

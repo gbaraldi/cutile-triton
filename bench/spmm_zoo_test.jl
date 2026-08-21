@@ -181,7 +181,7 @@ function test_rc(rng)
     Cdt = CuArray{T}(undef, n, m)
 
     ok = run_pair("rc pm",
-                  bnz -> build_spmm_rc(T; tile_m=32, tile_n=16, tile_k=4, pm=true, beta_nz=bnz),
+                  bnz -> build_spmm_rc(T; tile_m=32, tile_n=16, tile_k=1, pm=true, beta_nz=bnz),
                   (f!, C, α, β) -> f!(C, dlo, dhi, dinptr, dinids, rsign, Bd, α, β),
                   Cd, Apm, Bh, C0h, α, β)
     ok &= run_pair("rc vals",
