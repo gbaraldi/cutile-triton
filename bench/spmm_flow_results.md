@@ -1,6 +1,6 @@
 # Flow-matrix SpMM: cuTile vs KernelAbstractions vs cuSPARSE
 
-Results of `bench/spmm_flow.jl` (job 7997, 2026-08-21; follow-ups 1–3 quote earlier jobs) on the min-cost-flow
+Results of `bench/spmm_flow.jl` (job 8004, 2026-08-21; follow-ups 1–3 quote earlier jobs) on the min-cost-flow
 constraint matrix used by CoolPDLP: the node-arc incidence of the TX road
 network (`road_flow_07_TX_{a..e}`), **A = 2,073,870 × 5,116,492 with
 10,232,984 nonzeros** (all ±1, ~5 per row of A, ≤2 per row of Aᵀ).
@@ -23,7 +23,7 @@ Implementations:
 | label | what |
 |---|---|
 | cuTile csr / jds / rc / 2pr | TileTriton tile kernels (`spmm_csr_kernels.jl`, `spmm_zoo_kernels.jl`) |
-| … pm | value-free ±1 variants (`JDSMatrixPM`, `Matrix2PerRowPM`) |
+| … pm | value-free ±1 variants (`JDSMatrixPM`, `Matrix2PerRowPM`); a label **without** `pm` is the explicit-values (vals) variant of the same format |
 | … t | fully transposed layout: B passed as n×k, C as n×m (rhs columns contiguous) |
 | KA jds / rc / 2pr [nb=k] | KernelAbstractions SpMM ports of MinimumCostFlows' matrix_zoo kernels, one thread per row × `nb` rhs columns (SIMD.Vec accumulator); nb=1 is the original one-thread-per-element shape |
 | KA csr | CoolPDLP's row-per-thread `spmm_csr!` |
@@ -94,109 +94,109 @@ kernels; that manufactured a spurious "slower at large n" effect and
 
 | implementation | n=8 | n=64 | n=256 |
 |---|---:|---:|---:|
-| cuTile csr | 172 (0.95 ms) `8×8×16` | 182 (7.19 ms) `8×64×8` | 182 (28.75 ms) `8×64×8` |
-| cuTile jds pm | 166 (0.99 ms) `32×8×8` | 167 (7.84 ms) `16×16×8` | 167 (31.37 ms) `32×8×8` |
-| cuTile jds | 156 (1.05 ms) `32×8×8` | 162 (8.10 ms) `16×16×8` | 161 (32.48 ms) `16×16×8` |
-| KA jds pm[nb=1] | 347 (0.47 ms) | 357 (3.66 ms) | 357 (14.67 ms) |
-| KA jds[nb=1] | 121 (1.35 ms) | 121 (10.86 ms) | 121 (43.45 ms) |
-| KA jds pm[nb=4] | 229 (0.71 ms) | 236 (5.55 ms) | 235 (22.29 ms) |
-| KA jds[nb=4] | 171 (0.96 ms) | 174 (7.54 ms) | 174 (30.17 ms) |
-| KA jds pm[nb=8] | 154 (1.07 ms) | 152 (8.62 ms) | 152 (34.51 ms) |
-| KA jds[nb=8] | 143 (1.14 ms) | 142 (9.20 ms) | 142 (36.89 ms) |
-| cuTile rc pm | 174 (0.94 ms) `16×8×4×4` | 176 (7.45 ms) `16×8×4×4` | 176 (29.75 ms) `16×8×4×4` |
-| cuTile rc | 155 (1.06 ms) `16×8×4×8` | 165 (7.92 ms) `16×32×4×4` | 166 (31.64 ms) `16×32×4×4` |
+| cuTile csr | 172 (0.95 ms) `8×8×16` | 182 (7.19 ms) `8×64×8` | 182 (28.76 ms) `8×64×8` |
+| cuTile jds pm | 166 (0.98 ms) `32×8×8` | 167 (7.83 ms) `32×8×8` | 167 (31.40 ms) `32×8×8` |
+| cuTile jds | 156 (1.05 ms) `32×8×8` | 162 (8.09 ms) `16×16×8` | 161 (32.51 ms) `16×16×8` |
+| KA jds pm[nb=1] | 347 (0.47 ms) | 358 (3.66 ms) | 357 (14.68 ms) |
+| KA jds[nb=1] | 121 (1.35 ms) | 121 (10.86 ms) | 121 (43.44 ms) |
+| KA jds pm[nb=4] | 229 (0.71 ms) | 236 (5.55 ms) | 235 (22.27 ms) |
+| KA jds[nb=4] | 171 (0.96 ms) | 174 (7.54 ms) | 174 (30.16 ms) |
+| KA jds pm[nb=8] | 153 (1.07 ms) | 152 (8.61 ms) | 152 (34.51 ms) |
+| KA jds[nb=8] | 143 (1.14 ms) | 142 (9.21 ms) | 142 (36.88 ms) |
+| cuTile rc pm | 178 (0.92 ms) `16×8×2×8` | 180 (7.30 ms) `16×8×2×8` | 180 (29.13 ms) `16×8×2×8` |
+| cuTile rc | 157 (1.04 ms) `16×8×1×8` | 167 (7.83 ms) `16×16×2×8` | 168 (31.25 ms) `16×16×2×8` |
 | KA rc pm[nb=1] | **385 (0.42 ms)** | **386 (3.39 ms)** | **386 (13.58 ms)** |
-| KA rc[nb=1] | 144 (1.14 ms) | 144 (9.06 ms) | 145 (36.25 ms) |
-| KA rc pm[nb=4] | 231 (0.71 ms) | 237 (5.53 ms) | 237 (22.13 ms) |
-| KA rc[nb=4] | 149 (1.10 ms) | 149 (8.77 ms) | 149 (35.07 ms) |
+| KA rc[nb=1] | 144 (1.14 ms) | 144 (9.06 ms) | 145 (36.24 ms) |
+| KA rc pm[nb=4] | 231 (0.71 ms) | 237 (5.53 ms) | 237 (22.11 ms) |
+| KA rc[nb=4] | 149 (1.10 ms) | 149 (8.78 ms) | 150 (35.05 ms) |
 | KA rc pm[nb=8] | 156 (1.05 ms) | 155 (8.46 ms) | 155 (33.82 ms) |
 | KA rc[nb=8] | 139 (1.18 ms) | 140 (9.37 ms) | 140 (37.41 ms) |
-| KA csr | 104 (1.57 ms) | 104 (12.55 ms) | 104 (50.17 ms) |
-| cuSPARSE | 127 (1.29 ms) | 132 (9.89 ms) | 133 (39.42 ms) |
-| cuTile jds pm t | 245 (0.67 ms) `16×8×4` | 346 (3.79 ms) `16×64×8` | 340 (15.40 ms) `16×64×8` |
-| cuTile jds t | 226 (0.72 ms) `32×8×8` | 339 (3.86 ms) `16×64×8` | 333 (15.72 ms) `16×64×8` |
+| KA csr | 104 (1.57 ms) | 104 (12.55 ms) | 104 (50.19 ms) |
+| cuSPARSE | 127 (1.29 ms) | 132 (9.90 ms) | 133 (39.44 ms) |
+| cuTile jds pm t | 245 (0.67 ms) `16×8×4` | 346 (3.79 ms) `16×64×8` | 340 (15.41 ms) `16×64×8` |
+| cuTile jds t | 226 (0.72 ms) `32×8×8` | 339 (3.86 ms) `16×64×8` | 333 (15.73 ms) `16×64×8` |
 | KA jds pm[nb=1 t] | 248 (0.66 ms) | 353 (3.71 ms) | 369 (14.20 ms) |
-| KA jds[nb=1 t] | 228 (0.72 ms) | 340 (3.86 ms) | 353 (14.84 ms) |
-| KA jds pm[nb=4 t] | 220 (0.74 ms) | 355 (3.69 ms) | 370 (14.17 ms) |
-| KA jds[nb=4 t] | 199 (0.82 ms) | 349 (3.76 ms) | 368 (14.22 ms) |
-| KA jds pm[nb=8 t] | 214 (0.76 ms) | 354 (3.70 ms) | 370 (14.14 ms) |
+| KA jds[nb=1 t] | 228 (0.72 ms) | 340 (3.85 ms) | 353 (14.83 ms) |
+| KA jds pm[nb=4 t] | 220 (0.74 ms) | 355 (3.69 ms) | 370 (14.18 ms) |
+| KA jds[nb=4 t] | 199 (0.82 ms) | 349 (3.76 ms) | 369 (14.20 ms) |
+| KA jds pm[nb=8 t] | 216 (0.76 ms) | 354 (3.70 ms) | 370 (14.15 ms) |
 | KA jds[nb=8 t] | 198 (0.83 ms) | 347 (3.77 ms) | 369 (14.21 ms) |
-| cuTile rc pm t | 267 (0.61 ms) `16×8×4×4` | 230 (5.70 ms) `16×32×4×4` | 224 (23.44 ms) `16×32×4×4` |
-| cuTile rc t | 231 (0.71 ms) `16×8×4×4` | 227 (5.77 ms) `16×32×4×4` | 221 (23.74 ms) `16×64×4×4` |
+| cuTile rc pm t | 276 (0.59 ms) `32×8×1×8` | 342 (3.83 ms) `16×64×1×8` | 335 (15.63 ms) `16×64×1×8` |
+| cuTile rc t | 236 (0.69 ms) `16×8×1×8` | 332 (3.95 ms) `16×64×1×8` | 326 (16.07 ms) `16×64×1×8` |
 | KA rc pm[nb=1 t] | 275 (0.60 ms) | 355 (3.69 ms) | 370 (14.17 ms) |
 | KA rc[nb=1 t] | 235 (0.70 ms) | 344 (3.81 ms) | 366 (14.32 ms) |
-| KA rc pm[nb=4 t] | 236 (0.69 ms) | 355 (3.69 ms) | 368 (14.23 ms) |
-| KA rc[nb=4 t] | 202 (0.81 ms) | 344 (3.81 ms) | 366 (14.31 ms) |
-| KA rc pm[nb=8 t] | 226 (0.73 ms) | 353 (3.71 ms) | 370 (14.16 ms) |
-| KA rc[nb=8 t] | 199 (0.82 ms) | 343 (3.82 ms) | 367 (14.28 ms) |
+| KA rc pm[nb=4 t] | 236 (0.69 ms) | 355 (3.69 ms) | 368 (14.22 ms) |
+| KA rc[nb=4 t] | 202 (0.81 ms) | 344 (3.81 ms) | 366 (14.33 ms) |
+| KA rc pm[nb=8 t] | 225 (0.73 ms) | 353 (3.71 ms) | 370 (14.16 ms) |
+| KA rc[nb=8 t] | 199 (0.82 ms) | 342 (3.82 ms) | 367 (14.28 ms) |
 
 ### A·B (nodes×arcs, JDS formats), general α/β (reads C)
 
 | implementation | n=8 | n=64 | n=256 |
 |---|---:|---:|---:|
-| cuTile csr | 129 (1.27 ms) `8×8×16` | 124 (10.57 ms) `8×64×8` | 124 (42.36 ms) `8×64×8` |
-| cuTile jds pm | 145 (1.13 ms) `32×8×8` | 130 (10.09 ms) `16×16×8` | 146 (35.94 ms) `32×8×8` |
-| cuTile jds | 137 (1.19 ms) `32×8×8` | 126 (10.37 ms) `16×16×8` | 126 (41.42 ms) `16×16×8` |
+| cuTile csr | 129 (1.27 ms) `8×8×16` | 124 (10.57 ms) `8×64×8` | 124 (42.38 ms) `8×64×8` |
+| cuTile jds pm | 145 (1.13 ms) `32×8×8` | 146 (9.00 ms) `32×8×8` | 146 (35.94 ms) `32×8×8` |
+| cuTile jds | 138 (1.19 ms) `32×8×8` | 126 (10.37 ms) `16×16×8` | 126 (41.43 ms) `16×16×8` |
 | KA jds pm[nb=1] | 251 (0.65 ms) | 250 (5.23 ms) | 250 (20.92 ms) |
-| KA jds pm[nb=4] | 187 (0.88 ms) | 190 (6.91 ms) | 189 (27.68 ms) |
-| KA jds pm[nb=8] | 137 (1.19 ms) | 137 (9.57 ms) | 137 (38.26 ms) |
-| cuTile rc pm | 133 (1.23 ms) `16×8×4×4` | 135 (9.73 ms) `16×8×4×4` | 135 (38.89 ms) `16×8×4×4` |
-| cuTile rc | 121 (1.36 ms) `16×8×4×8` | 134 (9.75 ms) `16×32×4×4` | 134 (39.13 ms) `16×32×4×4` |
-| KA rc pm[nb=1] | **272 (0.60 ms)** | 270 (4.85 ms) | 270 (19.43 ms) |
-| KA rc pm[nb=4] | 191 (0.86 ms) | 195 (6.73 ms) | 195 (26.89 ms) |
-| KA rc pm[nb=8] | 140 (1.17 ms) | 140 (9.35 ms) | 140 (37.36 ms) |
-| cuSPARSE | 107 (1.53 ms) | 106 (12.41 ms) | 106 (49.63 ms) |
-| cuTile jds pm t | 217 (0.75 ms) `16×8×4` | 292 (4.48 ms) `16×64×8` | 288 (18.23 ms) `16×64×8` |
-| cuTile jds t | 202 (0.81 ms) `32×8×8` | 288 (4.56 ms) `16×64×8` | 282 (18.57 ms) `16×64×8` |
+| KA jds pm[nb=4] | 187 (0.88 ms) | 190 (6.91 ms) | 189 (27.66 ms) |
+| KA jds pm[nb=8] | 137 (1.19 ms) | 137 (9.57 ms) | 137 (38.24 ms) |
+| cuTile rc pm | 149 (1.10 ms) `16×8×2×8` | 151 (8.70 ms) `16×8×2×8` | 151 (34.76 ms) `16×8×2×8` |
+| cuTile rc | 125 (1.31 ms) `16×8×1×8` | 135 (9.67 ms) `16×16×2×8` | 136 (38.61 ms) `16×16×2×8` |
+| KA rc pm[nb=1] | **272 (0.60 ms)** | 270 (4.86 ms) | 270 (19.43 ms) |
+| KA rc pm[nb=4] | 191 (0.86 ms) | 195 (6.73 ms) | 195 (26.87 ms) |
+| KA rc pm[nb=8] | 140 (1.17 ms) | 140 (9.35 ms) | 140 (37.35 ms) |
+| cuSPARSE | 107 (1.54 ms) | 106 (12.41 ms) | 106 (49.61 ms) |
+| cuTile jds pm t | 217 (0.75 ms) `16×8×4` | 293 (4.47 ms) `16×64×8` | 287 (18.23 ms) `16×64×8` |
+| cuTile jds t | 202 (0.81 ms) `32×8×8` | 287 (4.56 ms) `16×64×8` | 282 (18.57 ms) `16×64×8` |
 | KA jds pm[nb=1 t] | 219 (0.75 ms) | 296 (4.43 ms) | 307 (17.08 ms) |
-| KA jds pm[nb=4 t] | 198 (0.83 ms) | 296 (4.42 ms) | **308 (16.99 ms)** |
+| KA jds pm[nb=4 t] | 198 (0.83 ms) | 296 (4.42 ms) | **308 (16.98 ms)** |
 | KA jds pm[nb=8 t] | 197 (0.83 ms) | 296 (4.42 ms) | 308 (17.03 ms) |
-| cuTile rc pm t | 239 (0.69 ms) `16×8×4×4` | 223 (5.87 ms) `16×32×4×4` | 215 (24.41 ms) `16×32×4×4` |
-| cuTile rc t | 206 (0.79 ms) `16×8×4×4` | 220 (5.94 ms) `16×32×4×4` | 213 (24.61 ms) `16×64×4×4` |
-| KA rc pm[nb=1 t] | 238 (0.69 ms) | **297 (4.41 ms)** | 308 (17.03 ms) |
-| KA rc pm[nb=4 t] | 210 (0.78 ms) | 296 (4.42 ms) | 308 (17.02 ms) |
-| KA rc pm[nb=8 t] | 203 (0.80 ms) | 296 (4.43 ms) | 308 (17.04 ms) |
+| cuTile rc pm t | 239 (0.69 ms) `32×8×1×8` | 289 (4.53 ms) `16×64×1×8` | 284 (18.46 ms) `16×64×1×8` |
+| cuTile rc t | 210 (0.78 ms) `16×8×1×8` | 282 (4.65 ms) `16×64×1×8` | 276 (18.96 ms) `16×64×1×8` |
+| KA rc pm[nb=1 t] | 238 (0.69 ms) | **297 (4.41 ms)** | 308 (17.04 ms) |
+| KA rc pm[nb=4 t] | 211 (0.78 ms) | 296 (4.43 ms) | 308 (17.02 ms) |
+| KA rc pm[nb=8 t] | 204 (0.80 ms) | 296 (4.43 ms) | 308 (17.04 ms) |
 
 ### Aᵀ·B (arcs×nodes, 2-per-row formats), β = 0
 
 | implementation | n=8 | n=64 | n=256 |
 |---|---:|---:|---:|
-| cuTile csr | 286 (0.57 ms) `16×8×4` | 245 (5.35 ms) `8×64×4` | 245 (21.35 ms) `8×64×4` |
-| cuTile 2pr pm | 388 (0.42 ms) `32×8×4` | 424 (3.09 ms) `16×32×8` | 425 (12.32 ms) `16×32×8` |
-| cuTile 2pr | 345 (0.48 ms) `32×8×8` | 385 (3.40 ms) `32×32×8` | 386 (13.56 ms) `32×32×8` |
-| KA 2pr pm[nb=1] | **432 (0.38 ms)** | 440 (2.98 ms) | 441 (11.89 ms) |
-| KA 2pr[nb=1] | 141 (1.16 ms) | 141 (9.26 ms) | 142 (37.03 ms) |
+| cuTile csr | 287 (0.57 ms) `16×8×4` | 245 (5.34 ms) `8×64×4` | 246 (21.33 ms) `8×64×4` |
+| cuTile 2pr pm | 385 (0.42 ms) `32×8×4` | 424 (3.09 ms) `16×32×8` | 425 (12.32 ms) `16×32×8` |
+| cuTile 2pr | 344 (0.48 ms) `32×8×8` | 386 (3.40 ms) `32×32×8` | 387 (13.54 ms) `32×32×8` |
+| KA 2pr pm[nb=1] | **433 (0.38 ms)** | 440 (2.97 ms) | 441 (11.87 ms) |
+| KA 2pr[nb=1] | 142 (1.16 ms) | 142 (9.26 ms) | 142 (37.03 ms) |
 | KA 2pr pm[nb=4] | 339 (0.48 ms) | 340 (3.85 ms) | 340 (15.41 ms) |
-| KA 2pr[nb=4] | 274 (0.60 ms) | 274 (4.78 ms) | 274 (19.13 ms) |
-| KA 2pr pm[nb=8] | 364 (0.45 ms) | 365 (3.59 ms) | 364 (14.37 ms) |
-| KA 2pr[nb=8] | 325 (0.50 ms) | 322 (4.06 ms) | 322 (16.29 ms) |
+| KA 2pr[nb=4] | 273 (0.60 ms) | 274 (4.77 ms) | 274 (19.12 ms) |
+| KA 2pr pm[nb=8] | 367 (0.45 ms) | 365 (3.59 ms) | 365 (14.37 ms) |
+| KA 2pr[nb=8] | 322 (0.51 ms) | 322 (4.06 ms) | 322 (16.27 ms) |
 | KA csr | 94 (1.73 ms) | 95 (13.80 ms) | 95 (55.19 ms) |
-| cuSPARSE | 170 (0.96 ms) | 179 (7.32 ms) | 179 (29.26 ms) |
-| cuTile 2pr pm t | 391 (0.42 ms) `64×8×8` | 455 (2.88 ms) `16×64×8` | 392 (13.35 ms) `16×64×8` |
-| cuTile 2pr t | 350 (0.47 ms) `32×8×8` | 444 (2.95 ms) `16×64×8` | 377 (13.90 ms) `16×64×8` |
-| KA 2pr pm[nb=1 t] | 372 (0.44 ms) | 434 (3.02 ms) | 440 (11.92 ms) |
-| KA 2pr[nb=1 t] | 340 (0.48 ms) | 424 (3.09 ms) | 432 (12.13 ms) |
-| KA 2pr pm[nb=4 t] | 392 (0.42 ms) | 469 (2.79 ms) | 473 (11.07 ms) |
-| KA 2pr[nb=4 t] | 340 (0.48 ms) | 457 (2.86 ms) | 470 (11.14 ms) |
-| KA 2pr pm[nb=8 t] | 384 (0.43 ms) | **474 (2.76 ms)** | **481 (10.90 ms)** |
-| KA 2pr[nb=8 t] | 337 (0.49 ms) | 462 (2.84 ms) | 477 (10.98 ms) |
+| cuSPARSE | 171 (0.96 ms) | 179 (7.32 ms) | 180 (29.19 ms) |
+| cuTile 2pr pm t | 390 (0.42 ms) `64×8×8` | 455 (2.88 ms) `16×64×8` | 392 (13.37 ms) `16×64×8` |
+| cuTile 2pr t | 350 (0.47 ms) `32×8×8` | 443 (2.96 ms) `16×64×8` | 377 (13.90 ms) `16×64×8` |
+| KA 2pr pm[nb=1 t] | 372 (0.44 ms) | 434 (3.01 ms) | 440 (11.92 ms) |
+| KA 2pr[nb=1 t] | 340 (0.48 ms) | 424 (3.09 ms) | 432 (12.12 ms) |
+| KA 2pr pm[nb=4 t] | 389 (0.42 ms) | 469 (2.79 ms) | 473 (11.07 ms) |
+| KA 2pr[nb=4 t] | 337 (0.49 ms) | 456 (2.87 ms) | 470 (11.14 ms) |
+| KA 2pr pm[nb=8 t] | 386 (0.42 ms) | **475 (2.76 ms)** | **480 (10.91 ms)** |
+| KA 2pr[nb=8 t] | 338 (0.48 ms) | 462 (2.84 ms) | 477 (10.97 ms) |
 
 ### Aᵀ·B (arcs×nodes, 2-per-row formats), general α/β (reads C)
 
 | implementation | n=8 | n=64 | n=256 |
 |---|---:|---:|---:|
-| cuTile csr | 134 (1.22 ms) `16×8×4` | 104 (12.65 ms) `8×64×4` | 104 (50.55 ms) `8×64×4` |
-| cuTile 2pr pm | 214 (0.76 ms) `32×8×4` | 160 (8.20 ms) `16×32×8` | 160 (32.72 ms) `16×32×8` |
-| cuTile 2pr | 206 (0.79 ms) `32×8×8` | 205 (6.38 ms) `32×32×8` | 205 (25.51 ms) `32×32×8` |
-| KA 2pr pm[nb=1] | 249 (0.66 ms) | 257 (5.10 ms) | 256 (20.46 ms) |
-| KA 2pr pm[nb=4] | 218 (0.75 ms) | 220 (5.95 ms) | 220 (23.80 ms) |
-| KA 2pr pm[nb=8] | 208 (0.79 ms) | 209 (6.26 ms) | 210 (25.01 ms) |
-| cuSPARSE | 92 (1.78 ms) | 89 (14.68 ms) | 89 (58.59 ms) |
-| cuTile 2pr pm t | **254 (0.64 ms) `64×8×8`** | 268 (4.88 ms) `16×64×8` | 257 (20.41 ms) `16×64×8` |
-| cuTile 2pr t | 234 (0.70 ms) `32×8×8` | 265 (4.94 ms) `16×64×8` | 242 (21.61 ms) `16×64×8` |
-| KA 2pr pm[nb=1 t] | 249 (0.66 ms) | 281 (4.66 ms) | 281 (18.63 ms) |
-| KA 2pr pm[nb=4 t] | 245 (0.67 ms) | **285 (4.59 ms)** | 287 (18.26 ms) |
-| KA 2pr pm[nb=8 t] | 253 (0.65 ms) | 285 (4.59 ms) | **288 (18.20 ms)** |
+| cuTile csr | 134 (1.22 ms) `16×8×4` | 104 (12.64 ms) `8×64×4` | 104 (50.55 ms) `8×64×4` |
+| cuTile 2pr pm | 214 (0.76 ms) `32×8×4` | 160 (8.20 ms) `16×32×8` | 160 (32.73 ms) `16×32×8` |
+| cuTile 2pr | 206 (0.79 ms) `32×8×8` | 205 (6.38 ms) `32×32×8` | 205 (25.50 ms) `32×32×8` |
+| KA 2pr pm[nb=1] | 248 (0.66 ms) | 256 (5.11 ms) | 256 (20.46 ms) |
+| KA 2pr pm[nb=4] | 218 (0.75 ms) | 220 (5.96 ms) | 220 (23.80 ms) |
+| KA 2pr pm[nb=8] | 208 (0.79 ms) | 209 (6.25 ms) | 210 (25.01 ms) |
+| cuSPARSE | 92 (1.78 ms) | 89 (14.69 ms) | 89 (58.61 ms) |
+| cuTile 2pr pm t | **253 (0.65 ms) `64×8×8`** | 268 (4.88 ms) `16×64×8` | 257 (20.40 ms) `16×64×8` |
+| cuTile 2pr t | 235 (0.70 ms) `32×8×8` | 265 (4.95 ms) `16×64×8` | 242 (21.61 ms) `16×64×8` |
+| KA 2pr pm[nb=1 t] | 253 (0.65 ms) | 281 (4.66 ms) | 281 (18.63 ms) |
+| KA 2pr pm[nb=4 t] | 243 (0.67 ms) | **285 (4.59 ms)** | 287 (18.24 ms) |
+| KA 2pr pm[nb=8 t] | 250 (0.65 ms) | 285 (4.59 ms) | **288 (18.21 ms)** |
 
 
 ## Follow-up 1: why KA 2pr pm beats cuTile 2pr pm — tile/num_warps sweep (job 7985)
@@ -340,8 +340,10 @@ A·B, β = 0, GFLOP/s (n = 8 / 64 / 256):
 | KA jds pm (nb=1) | 347 / 357 / 357 | 248 / 353 / 369 |
 | KA rc vals (nb=1) | 144 / 144 / 145 | 235 / 344 / 366 |
 | KA jds vals (nb=1) | 121 / 121 / 121 | 228 / 340 / 353 |
-| cuTile rc pm | 174 / 176 / 176 | 267 / 230 / 224 |
+| cuTile rc pm | 178 / 180 / 180 | 276 / 342 / 335 |
 | cuTile jds pm | 166 / 167 / 167 | 245 / 346 / 340 |
+| cuTile rc vals | 157 / 167 / 168 | 236 / 332 / 326 |
+| cuTile jds vals | 156 / 162 / 161 | 226 / 339 / 333 |
 | cuSPARSE | 127 / 132 / 133 | – |
 
 - **Range + CSR is better than JDS for the same kernel shape**: +8–11%
@@ -355,13 +357,17 @@ A·B, β = 0, GFLOP/s (n = 8 / 64 / 256):
   per-entry value load is amortized over a coalesced row instead of
   competing with 4-byte scattered gathers. Previously the KA `t` rows
   were 7–30 GFLOP/s purely because of the row-fastest thread order.
-- **The cuTile rc kernel does not keep up** (176 standard, 230 `t`, vs
-  cuTile jds `t` 346): with tile_k=4 on ranges of average length 2.5 and
-  unsorted scattered lengths within a tile, most gather lanes are masked;
-  JDS's length-sorted rows avoid that. tile_k ∈ {1, 2} candidates and
-  sorting rows by scattered length are the obvious next steps. The
-  tile_m=16 candidates added in follow-up 3 lifted cuTile jds pm `t` from
-  298 to 346 (`16×64`, 8 warps).
+- **The cuTile rc kernel matches JDS once it walks nonzeros the way JDS
+  does.** A first version ran two loops (range, then scattered), each to
+  the tile's maximum length of that part, while A's rows are sorted by
+  *total* length — most gather lanes were masked (176 standard / 230
+  transposed). One loop over k = 0 … total−1 that takes `lo + k` below the
+  range length and the CSR entry above it (`rc_accumulate`) has JDS's lane
+  utilisation with half the id gathers masked off: 180 / 180 standard
+  (ahead of jds's 167) and 342 / 335 transposed (jds 346 / 340), at
+  `16×64×1`, 8 warps — `tile_k = 1` wins, as the row lengths (avg 5)
+  suggest. The tile_m=16 candidates added in follow-up 3 are what lifted
+  cuTile jds pm `t` from 298 to 346 (`16×64`, 8 warps).
 - **Aᵀ·B side effects of the thread-order fix**: KA 2pr vals nb=8 `t`
   reaches **462 / 477** at n = 64 / 256 — the fastest Aᵀ·B of all, above
   KA 2pr pm nb=1 (441) — each thread reads 8 contiguous floats (a full
