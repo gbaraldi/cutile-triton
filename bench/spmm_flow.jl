@@ -2,8 +2,8 @@
 # node-arc incidence — the matrix from CoolPDLP2/reactant/benchmarks.jl),
 # in every format we have a kernel for:
 #
-#   A  (nodes×arcs, ~5 nnz/row):  cuTile CSR, cuTile JDS (pm/vals),
-#                                 KA jds, KA csr, cuSPARSE/rocSPARSE
+#   A  (nodes×arcs, ~5 nnz/row):  cuTile CSR, cuTile JDS and range+CSR
+#                                 (pm/vals), KA jds, KA rc, KA csr, cuSPARSE/rocSPARSE
 #   Aᵀ (arcs×nodes, ≤2 nnz/row):  cuTile CSR, cuTile 2-per-row (pm/vals),
 #                                 KA 2pr, KA csr, cuSPARSE/rocSPARSE
 #
@@ -65,7 +65,7 @@ end
 
 @kernel function spmm_jds_pm_ka!(c, colidx, iterptr, b, α, β, ::Val{NB},
                                  ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
-    i, blk = @index(Global, NTuple)
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     T = eltype(c)
     @inbounds begin
@@ -84,7 +84,7 @@ end
 
 @kernel function spmm_jds_ka!(c, colidx, iterptr, vals, b, α, β, ::Val{NB},
                               ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
-    i, blk = @index(Global, NTuple)
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     @inbounds begin
         s = zero(Vec{NB, eltype(c)})
@@ -101,7 +101,7 @@ end
 
 @kernel function spmm_2pr_pm_ka!(c, colidx, b, α, β, ::Val{NB},
                                  ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
-    i, blk = @index(Global, NTuple)
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     @inbounds begin
         s = zero(Vec{NB, eltype(c)})
@@ -115,7 +115,7 @@ end
 
 @kernel function spmm_2pr_ka!(c, colidx, vals, b, α, β, ::Val{NB},
                               ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
-    i, blk = @index(Global, NTuple)
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
     b0 = (blk - 1) * NB
     @inbounds begin
         s = zero(Vec{NB, eltype(c)})
@@ -125,6 +125,81 @@ end
         j2 > 0 && (s = muladd(vals[2, i], nb_load(b, j2, b0, Val(NB), Val(BT)), s))
         nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
     end
+end
+
+"Thread → (row, column block). In the transposed layout the ndrange is
+(n ÷ NB, m) so consecutive threads take consecutive rhs columns: the
+contiguous direction of the n×k B and n×m C."
+@inline ka_rowcol(idx, ::Val{false}) = idx
+@inline ka_rowcol(idx, ::Val{true}) = (idx[2], idx[1])
+ka_ndrange(m, nblk, bt) = bt ? (nblk, m) : (m, nblk)
+
+# range + CSR (see spmm_zoo_kernels.jl): contiguous column range [lo, hi)
+# of value rsign, scattered CSR columns of value -rsign
+@kernel function spmm_rc_pm_ka!(c, lo, hi, inptr, inids, b, α, β, rsign, ::Val{NB},
+                                ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
+    b0 = (blk - 1) * NB
+    @inbounds begin
+        s = zero(Vec{NB, eltype(c)})
+        for a in lo[i]:(hi[i] - Int32(1))
+            s += nb_load(b, a, b0, Val(NB), Val(BT))
+        end
+        for p in inptr[i]:(inptr[i + 1] - Int32(1))
+            s -= nb_load(b, inids[p], b0, Val(NB), Val(BT))
+        end
+        nb_store!(c, s, i, b0, α * rsign, β, Val(BT), Val(BETA_NZ))
+    end
+end
+
+@kernel function spmm_rc_ka!(c, lo, hi, rvals, inptr, inids, invals, b, α, β, ::Val{NB},
+                             ::Val{BT}, ::Val{BETA_NZ}) where {NB, BT, BETA_NZ}
+    i, blk = ka_rowcol(@index(Global, NTuple), Val(BT))
+    b0 = (blk - 1) * NB
+    @inbounds begin
+        s = zero(Vec{NB, eltype(c)})
+        for a in lo[i]:(hi[i] - Int32(1))
+            s = muladd(rvals[a], nb_load(b, a, b0, Val(NB), Val(BT)), s)
+        end
+        for p in inptr[i]:(inptr[i + 1] - Int32(1))
+            s = muladd(invals[p], nb_load(b, inids[p], b0, Val(NB), Val(BT)), s)
+        end
+        nb_store!(c, s, i, b0, α, β, Val(BT), Val(BETA_NZ))
+    end
+end
+
+"""
+    range_csr(rowptr, colval, nzval) -> (; lo, hi, inptr, inids, rsign)
+
+Split a CSR matrix whose rows are one contiguous column range of one sign
+plus scattered columns of the other — the node-arc incidence with arcs
+numbered by one endpoint — into per-row range bounds (hi exclusive) and a
+CSR of the scattered part. Errors if neither sign's entries are contiguous
+in every row.
+"""
+function range_csr(rowptr, colval, nzval)
+    m = length(rowptr) - 1
+    for rsign in (-1, 1)
+        lo = ones(Int32, m); hi = ones(Int32, m)
+        inptr = Vector{Int32}(undef, m + 1); inptr[1] = 1
+        inids = sizehint!(Int32[], length(colval) ÷ 2)
+        ok = true
+        for i in 1:m
+            cnt = 0; first = typemax(Int32); last = Int32(0)
+            for p in rowptr[i]:(rowptr[i + 1] - 1)
+                if sign(nzval[p]) == rsign
+                    cnt += 1; first = min(first, colval[p]); last = max(last, colval[p])
+                else
+                    push!(inids, colval[p])
+                end
+            end
+            cnt == 0 || cnt == last - first + 1 || (ok = false; break)
+            cnt > 0 && (lo[i] = first; hi[i] = last + 1)
+            inptr[i + 1] = length(inids) + 1
+        end
+        ok && return (; lo, hi, inptr, inids, rsign)
+    end
+    error("range_csr: no sign has contiguous columns in every row")
 end
 
 # ---------------------------------------------------------------------------
@@ -224,6 +299,15 @@ function main()
     jds_iter = GPUArr(zoo.jds_iterptr)
     @assert zoo.jds_nrows == m && zoo.jds_ncols == k
 
+    # range + CSR arrays of A, derived from its CSR
+    rc = range_csr(At.colptr, At.rowval, At.nzval)
+    println("# range+CSR: range sign $(rc.rsign), $(length(rc.inids)) scattered of $(nnz(A)) nnz, ",
+            "max range $(maximum(rc.hi .- rc.lo)), max scattered $(maximum(diff(rc.inptr)))")
+    rc_lo = GPUArr(rc.lo); rc_hi = GPUArr(rc.hi)
+    rc_inptr = GPUArr(rc.inptr); rc_inids = GPUArr(rc.inids)
+    rc_rvals = GPUArr(fill(T(rc.rsign), k)); rc_invals = GPUArr(fill(T(-rc.rsign), length(rc.inids)))
+    rsign = T(rc.rsign)
+
     # 2-per-row arrays of Aᵀ (the 2×m slot matrices, shared by cuTile and KA)
     tpr_col2 = GPUArr(zoo.tpr_colidx)
     tpr_vals2 = GPUArr(repeat(T[1, -1], 1, size(zoo.tpr_colidx, 2)))
@@ -279,7 +363,7 @@ function main()
                     jds_ka! = spmm_jds_ka!(KA.get_backend(Cd))
                     for nb in (1, 4, 8)
                         n % nb == 0 || continue
-                        grid = (mm, n ÷ nb)
+                        grid = ka_ndrange(mm, n ÷ nb, bt)
                         bench_impl(case, "KA jds pm[nb=$nb$lay]", flops, Cd, ctx;
                             f0=C -> jds_pm_ka!(C, jds_col, jds_iter, Bx, T(1),
                                                T(0), Val(nb), Val(bt), Val(false);
@@ -291,6 +375,37 @@ function main()
                             f0=C -> jds_ka!(C, jds_col_abs, jds_iter, jds_nz, Bx,
                                             T(1), T(0), Val(nb), Val(bt), Val(false);
                                             ndrange=grid))
+                    end
+                    # cuTile range + CSR
+                    bench_cutile(case, "rc pm$lay", flops, Cd, ctx, α2, β2;
+                        cands=rc_tile_candidates(n),
+                        build=((tm, tn, tk, nw), bnz) -> build_spmm_rc(T; tile_m=tm,
+                            tile_n=tn, tile_k=tk, pm=true, beta_nz=bnz, bt, num_warps=nw),
+                        launch=(f!, C, α, β) -> f!(C, rc_lo, rc_hi, rc_inptr, rc_inids,
+                                                   rsign, Bx, α, β))
+                    bench_cutile(case, "rc$lay", flops, Cd, ctx, α2, β2;
+                        cands=rc_tile_candidates(n),
+                        build=((tm, tn, tk, nw), bnz) -> build_spmm_rc(T; tile_m=tm,
+                            tile_n=tn, tile_k=tk, pm=false, beta_nz=bnz, bt, num_warps=nw),
+                        launch=(f!, C, α, β) -> f!(C, rc_lo, rc_hi, rc_rvals, rc_inptr,
+                                                   rc_inids, rc_invals, Bx, α, β))
+                    # KA range + CSR
+                    rc_pm_ka! = spmm_rc_pm_ka!(KA.get_backend(Cd))
+                    rc_ka! = spmm_rc_ka!(KA.get_backend(Cd))
+                    for nb in (1, 4, 8)
+                        n % nb == 0 || continue
+                        grid = ka_ndrange(mm, n ÷ nb, bt)
+                        bench_impl(case, "KA rc pm[nb=$nb$lay]", flops, Cd, ctx;
+                            f0=C -> rc_pm_ka!(C, rc_lo, rc_hi, rc_inptr, rc_inids, Bx,
+                                              T(1), T(0), rsign, Val(nb), Val(bt),
+                                              Val(false); ndrange=grid),
+                            fab=C -> rc_pm_ka!(C, rc_lo, rc_hi, rc_inptr, rc_inids, Bx,
+                                               α2, β2, rsign, Val(nb), Val(bt),
+                                               Val(true); ndrange=grid))
+                        bench_impl(case, "KA rc[nb=$nb$lay]", flops, Cd, ctx;
+                            f0=C -> rc_ka!(C, rc_lo, rc_hi, rc_rvals, rc_inptr, rc_inids,
+                                           rc_invals, Bx, T(1), T(0), Val(nb), Val(bt),
+                                           Val(false); ndrange=grid))
                     end
                 else
                     # cuTile 2-per-row
@@ -309,7 +424,7 @@ function main()
                     tpr_ka! = spmm_2pr_ka!(KA.get_backend(Cd))
                     for nb in (1, 4, 8)
                         n % nb == 0 || continue
-                        grid = (mm, n ÷ nb)
+                        grid = ka_ndrange(mm, n ÷ nb, bt)
                         bench_impl(case, "KA 2pr pm[nb=$nb$lay]", flops, Cd, ctx;
                             f0=C -> tpr_pm_ka!(C, tpr_col2, Bx, T(1), T(0), Val(nb),
                                                Val(bt), Val(false); ndrange=grid),

@@ -250,6 +250,137 @@ function build_spmm_jds(::Type{T}; tile_m::Int, tile_n::Int, pm::Bool,
     end
 end
 
+# --- Range + CSR ("rc"): the node-arc incidence seen from the rows ---------
+#
+# With arcs numbered by one endpoint (the CSC order of the adjacency
+# matrix), each row of the nodes×arcs incidence is one contiguous column
+# range (the arcs of that endpoint, one sign) plus a scattered list (the
+# arcs of the other endpoint, the opposite sign). The range needs no column
+# ids at all — its B rows are a dense strip — so only the scattered half is
+# a CSR. `lo`/`hi` bound the range per row (hi exclusive), `rsign` is the
+# value of the range entries (the scattered ones are -rsign). The vals
+# variant carries `rvals` indexed by column (each column lies in exactly one
+# range) and `invals` per scattered entry instead.
+
+"Gather the (TILE_M, TILE_K, TILE_N) B block for the (TILE_M, TILE_K) id
+tile and sum it over K; ids ≤ 0 bounds-mask to zero rows (see gather_b)."
+@inline function gather_b_sum(B, ids, ncols3, BT::Bool, TILE_M::Int, TILE_K::Int, TILE_N::Int)
+    ids3 = reshape(ids, (TILE_M, TILE_K, 1))
+    bt = BT ? ct.gather(B, (ncols3, ids3)) : ct.gather(B, (ids3, ncols3))
+    return reshape(sum(bt; dims=2), (TILE_M, TILE_N))
+end
+
+@inline function gather_b_wsum(B, ids, w, ncols3, BT::Bool, TILE_M::Int, TILE_K::Int, TILE_N::Int)
+    ids3 = reshape(ids, (TILE_M, TILE_K, 1))
+    bt = BT ? ct.gather(B, (ncols3, ids3)) : ct.gather(B, (ids3, ncols3))
+    return reshape(sum(reshape(w, (TILE_M, TILE_K, 1)) .* bt; dims=2), (TILE_M, TILE_N))
+end
+
+function spmm_rc_pm_kernel(C::ct.TileArray{T, 2},
+                           lo::ct.TileArray{Int32, 1}, hi::ct.TileArray{Int32, 1},
+                           inptr::ct.TileArray{Int32, 1}, inids::ct.TileArray{Int32, 1},
+                           B::ct.TileArray{T, 2}, alpha::T, beta::T, rsign::T,
+                           TILE_M::Int, TILE_N::Int, TILE_K::Int,
+                           BETA_NZ::Bool, BT::Bool) where {T}
+    bm = ct.bid(1)
+    bn = ct.bid(2)
+    rows = tile_span(bm, TILE_M)
+    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
+    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
+    # contiguous range: the ids are the range itself (rows past m pad 0 → empty)
+    los = reshape(ct.gather(lo, rows), (TILE_M, 1))
+    his = reshape(ct.gather(hi, rows), (TILE_M, 1))
+    acc = zeros(T, (TILE_M, TILE_N))
+    for t in Int32(1):cld(maximum(his - los), Int32(TILE_K))
+        ids = (los .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
+        ids = ifelse.(ids .< his, ids, Int32(0))
+        acc = acc .+ gather_b_sum(B, ids, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    end
+    # scattered columns: a CSR
+    p0 = reshape(ct.gather(inptr, rows), (TILE_M, 1))
+    p1 = reshape(ct.gather(inptr, rows .+ Int32(1)), (TILE_M, 1))
+    acc2 = zeros(T, (TILE_M, TILE_N))
+    for t in Int32(1):cld(maximum(p1 - p0), Int32(TILE_K))
+        ptrs = (p0 .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
+        ids = ct.gather(inids, ptrs; mask=ptrs .< p1, padding_value=Int32(0))
+        acc2 = acc2 .+ gather_b_sum(B, ids, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    end
+    spmm_epilogue(C, bm, bn, rsign .* (acc .- acc2), alpha, beta,
+                  TILE_M, TILE_N, BETA_NZ, BT)
+    return
+end
+
+function spmm_rc_kernel(C::ct.TileArray{T, 2},
+                        lo::ct.TileArray{Int32, 1}, hi::ct.TileArray{Int32, 1},
+                        rvals::ct.TileArray{T, 1},
+                        inptr::ct.TileArray{Int32, 1}, inids::ct.TileArray{Int32, 1},
+                        invals::ct.TileArray{T, 1},
+                        B::ct.TileArray{T, 2}, alpha::T, beta::T,
+                        TILE_M::Int, TILE_N::Int, TILE_K::Int,
+                        BETA_NZ::Bool, BT::Bool) where {T}
+    bm = ct.bid(1)
+    bn = ct.bid(2)
+    rows = tile_span(bm, TILE_M)
+    ncols3 = reshape(tile_span(bn, TILE_N), (1, 1, TILE_N))
+    ks = reshape(ct.arange(TILE_K) .- Int32(1), (1, TILE_K))
+    los = reshape(ct.gather(lo, rows), (TILE_M, 1))
+    his = reshape(ct.gather(hi, rows), (TILE_M, 1))
+    acc = zeros(T, (TILE_M, TILE_N))
+    for t in Int32(1):cld(maximum(his - los), Int32(TILE_K))
+        ids = (los .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
+        ids = ifelse.(ids .< his, ids, Int32(0))
+        w = ct.gather(rvals, ids)                 # id 0 bounds-masks to 0
+        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    end
+    p0 = reshape(ct.gather(inptr, rows), (TILE_M, 1))
+    p1 = reshape(ct.gather(inptr, rows .+ Int32(1)), (TILE_M, 1))
+    for t in Int32(1):cld(maximum(p1 - p0), Int32(TILE_K))
+        ptrs = (p0 .+ (t - Int32(1)) * Int32(TILE_K)) .+ ks
+        kmask = ptrs .< p1
+        ids = ct.gather(inids, ptrs; mask=kmask, padding_value=Int32(0))
+        w = ct.gather(invals, ptrs; mask=kmask)
+        acc = acc .+ gather_b_wsum(B, ids, w, ncols3, BT, TILE_M, TILE_K, TILE_N)
+    end
+    spmm_epilogue(C, bm, bn, acc, alpha, beta, TILE_M, TILE_N, BETA_NZ, BT)
+    return
+end
+
+"""
+    build_spmm_rc(T; tile_m, tile_n, tile_k, pm, beta_nz, bt, num_warps) -> spmm!
+
+Compile a range + CSR SpMM kernel. The launcher is
+`spmm!(C, lo, hi, inptr, inids, rsign, B, α, β)` for `pm = true` and
+`spmm!(C, lo, hi, rvals, inptr, inids, invals, B, α, β)` otherwise.
+"""
+function build_spmm_rc(::Type{T}; tile_m::Int, tile_n::Int, tile_k::Int, pm::Bool,
+                       beta_nz::Bool, bt::Bool=false, num_warps::Int=4) where {T}
+    consts = (ct.Constant{Int, tile_m}, ct.Constant{Int, tile_n},
+              ct.Constant{Int, tile_k}, ct.Constant{Bool, beta_nz}, ct.Constant{Bool, bt})
+    grid = bt ? spmm_grid_t : spmm_grid
+    i1 = spmm_ta1(Int32)
+    if pm
+        k = TritonRun.triton_kernel(spmm_rc_pm_kernel,
+            Tuple{spmm_ta2(T), i1, i1, i1, i1, spmm_ta2(T), T, T, T, consts...};
+            name="spmm_rc_pm", num_warps)
+        return (C, lo, hi, inptr, inids, rsign, B, α, β) ->
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
+                              C, lo, hi, inptr, inids, B, T(α), T(β), T(rsign))
+    else
+        k = TritonRun.triton_kernel(spmm_rc_kernel,
+            Tuple{spmm_ta2(T), i1, i1, spmm_ta1(T), i1, i1, spmm_ta1(T), spmm_ta2(T),
+                  T, T, consts...};
+            name="spmm_rc", num_warps)
+        return (C, lo, hi, rvals, inptr, inids, invals, B, α, β) ->
+            TritonRun.launch!(k, grid(C, tile_m, tile_n),
+                              C, lo, hi, rvals, inptr, inids, invals, B, T(α), T(β))
+    end
+end
+
+# rc candidates: (tile_m, tile_n, tile_k, num_warps); each iteration gathers
+# tile_k B rows per C row, so tile_k plays per_row's role in the cap.
+rc_tile_candidates(n; tile_k=4) =
+    [(tm, tn, tile_k, nw) for (tm, tn, nw) in zoo_tile_candidates(n; per_row=tile_k)]
+
 # Candidate (tile_m, tile_n, num_warps) configs. The register footprint is
 # capped at 4096 gathered B elements per program at 4 warps (`per_row` B
 # rows gathered per C row), scaled with the warp count. Wide n is offered
