@@ -253,11 +253,13 @@ end
 # Candidate (tile_m, tile_n, num_warps) configs. The register footprint is
 # capped at 4096 gathered B elements per program at 4 warps (`per_row` B
 # rows gathered per C row), scaled with the warp count. Wide n is offered
-# as narrow slabs too (tile_n = 8, 16): more programs with fewer elements
-# per thread, which is what the gather-latency-bound kernels want.
+# as narrow slabs too (tile_n = 8..32): the gather-latency-bound kernels
+# want few elements per thread — 16×32 at 8 warps (2 per thread) is the
+# 2pr winner on the flow matrix, and tile_m ≥ 128 never won, so the
+# list stops at 64 rows (spmm_flow_results.md, follow-up 3).
 function zoo_tile_candidates(n; per_row)
     tn_max = clamp(nextpow(2, n), 4, 64)
-    tns = unique(clamp.((8, 16, tn_max), 4, tn_max))
-    return [(tm, tn, nw) for nw in (4, 8), tn in tns, tm in (32, 64, 128, 256)
+    tns = unique(clamp.((8, 16, 32, tn_max), 4, tn_max))
+    return [(tm, tn, nw) for nw in (4, 8), tn in tns, tm in (16, 32, 64)
             if tm * tn <= 4096 ÷ per_row * (nw ÷ 4)]
 end

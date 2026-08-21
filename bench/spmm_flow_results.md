@@ -251,6 +251,45 @@ via CUDA minor-version compatibility).
   explicit path's numbers are the better TileTriton figures; the table
   above is the like-for-like comparison.
 
+## Follow-up 3: the last 7% of cuTile 2pr pm vs KA (bench/spmm_2pr_variants.jl)
+
+Variants of the 2pr pm kernel isolating each suspected cost, Aᵀ·B, β = 0,
+n = 64 / 256 (identical at both), GFLOP/s at 32×16 / 8 warps:
+
+| variant | what changes | n=64 |
+|---|---|---:|
+| V0 current | `eachtile` ids + reshape, 2-D bounds-checked B gather, block store | 410 |
+| V1 | ids via flat 1-D gather + `expand_dims` | 410 |
+| V2 | V1 + flat 1-D B gather, precomputed column offsets, one explicit mask, `check_bounds=false` | 409 |
+| V4 | `eachtile` ids + flat B gather | 410 |
+| KA 2pr pm | one thread per element | 441 |
+
+Every 2pr config compiles to 12–28 registers, no spills, **no shared
+memory** (no layout conversions), and the variants' TTIR differs only in
+the expected reshape/broadcast counts. Neither the id path nor the gather
+arithmetic nor the bounds masks cost anything measurable; tall narrow
+tiles (`tile_n = 4`) are *worse*, monotonically with height (64×4: 352,
+512×4: 324), ruling out column locality too.
+
+What moves it is tile granularity towards KA's one element per thread.
+Below the sweep's `tile_m = 32` floor:
+
+| config (8 warps) | n=64 | n=256 |
+|---|---:|---:|
+| 32×16 (sweep best) | 410 | 411 |
+| **16×32** | **424** | **425** |
+| 16×16 @ 4 warps | 413 | 413 |
+| 8×32 | 250 | 250 |
+| KA 2pr pm | 441 | 441 |
+
+16×32 at 8 warps — exactly 2 elements per thread — leaves a ~4% gap, and
+8 rows falls off a cliff (the row-direction coalescing of the C store
+breaks below 16 rows). Nothing is left inside the kernel body; the
+residue is the fixed per-program cost (prologue, index tiles, grid
+bookkeeping) amortized over 512 elements, which a bare SIMT kernel does
+not pay. `zoo_tile_candidates` now includes `tile_m = 16` and
+`tile_n = 32` (and drops the never-winning `tile_m ≥ 128`).
+
 ## Reproducing
 
 ```
