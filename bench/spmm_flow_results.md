@@ -524,7 +524,7 @@ into a single `rptr` of length m+1, which is literally the adjacency
 matrix's CSC colptr. The chain only holds in **node order**; the exported
 A is in JDS length-sorted row order (`construct_constraint_matrix`'s
 `sortperm` by length), where it doesn't. `bench/spmm_rptr.jl` therefore
-benches the KA rc pm kernel in three variants on TX: the current `lo`/`hi`
+benches the rc kernels in three variants on TX: the current `lo`/`hi`
 on the matrix as exported, `lo`/`hi` with rows permuted to node order (the
 control that isolates the row order from the array merge), and the single
 `rptr` in node order (`node_order_rptr` in `bench/spmm_formats.jl`; the
@@ -562,8 +562,45 @@ A·B, β = 0, GFLOP/s at n = 8 / 64 / 256:
   already does for its own length sort). But the length sort exists for
   JDS's benefit — before switching the shared export to node order, the
   JDS kernels (whose iterptr construction assumes it) would need
-  re-benching, and cuTile rc + the vision instance haven't been run in
-  node order yet.
+  re-benching, and the vision instance hasn't been run in node order yet.
+
+### vals and cuTile in the same three variants (job 8138)
+
+The same experiment over the vals kernels and the cuTile rc kernels (the
+cuTile rptr kernel — `rp_accumulate`/`build_spmm_rp` in
+`bench/spmm_rptr.jl` — is `rc_accumulate` with both bounds gathered from
+one array; rows past m give rlen ≤ 0, masking everything as the 0-padded
+lo/hi did). GFLOP/s at n = 8 / 64 / 256, cuTile at its best config:
+
+| | lo/hi, jds order | lo/hi, node order | rptr, node order |
+|---|---|---|---|
+| KA rc vals nb=1 | 143 / 144 / 144 | 125 / 125 / 125 | 165 / 164 / 163 |
+| KA rc vals nb=8 | 139 / 140 / 140 | 317 / 318 / 318 | 322 / 325 / 326 |
+| KA rc vals nb=1 `t` | 235 / 344 / 356 | 333 / 478 / 494 | 341 / 482 / **496** |
+| cuTile rc pm | 178 / 180 / 180 | 404 / 457 / 460 | 418 / 460 / 462 |
+| cuTile rc pm `t` | 276 / 342 / 336 | 399 / 480 / 472 | 410 / **482** / 474 |
+| cuTile rc vals | 158 / 167 / 168 | 341 / 440 / 445 | 358 / 445 / 447 |
+| cuTile rc vals `t` | 237 / 332 / 326 | 341 / 473 / 465 | 358 / 476 / 466 |
+
+- **cuTile gains the most from node order — 2.6× in the standard layout**
+  (pm 180 → 462, vals 168 → 447), where it had been stuck since follow-up 4.
+  The length sort was supposed to help tile kernels by making trip counts
+  uniform within a 16-row tile, but on this matrix (row lengths ~5, max 16)
+  that is worth far less than the gathers hitting contiguous B rows: a
+  tile's 16 chained ranges form one dense B block. The winning standard
+  config widens from `16×8×2` to `16×32×1`. Best cuTile A·B is now 482
+  (pm `t`, `16×64×1`, 8 warps, n=64) vs KA's 509 — the gap to KA shrinks
+  from 2.1× to 6–10%.
+- **KA vals in the transposed layout reaches 496 — within 2.5% of pm's
+  509.** Follow-up 4's story (coalesced `t` loads amortize the value
+  reads) carries over at the higher level; explicit values now cost
+  almost nothing given the right layout and order. Standard-layout vals
+  stays uncompetitive, and its nb=1 shape is the one anomaly where node
+  order *lost* (144 → 125, recovered to 163 by rptr) — not investigated,
+  it is 3× below the leaders either way.
+- **rptr vs lo/hi at the same order stays 0–5%** for cuTile and the vals
+  kernels too (cuTile +0.4–3%). The conclusion stands: take the collapse
+  for the storage, take the row order for the speed.
 
 ## Reproducing
 
