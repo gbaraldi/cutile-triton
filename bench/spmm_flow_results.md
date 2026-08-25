@@ -39,6 +39,8 @@ Implementations:
    (KA 2pr pm) vs 14.9 ms (cuTile 2pr pm) vs 29.3 ms (cuSPARSE).
    Follow-up 4 moves both leaders: the range + CSR format (KA rc pm, 386)
    on A·B and the transposed-layout KA 2pr vals nb=8 (477) on Aᵀ·B.
+   Follow-up 7 moves the A·B leader again: permuting the rows to node
+   order (where the rc ranges chain) takes KA rc pm to **509**.
 2. **Not reading C for β = 0 was worth +40% (KA jds pm, 252 → 357) and
    +72% (KA 2pr pm, 256 → 442)** — far more than the read's share of the
    traffic (~15–25%): the load-add-store dependency on C was serializing
@@ -513,10 +515,61 @@ and is skipped.
 - `x2` (follow-up 5) again makes no difference: cuTile 2pr pm x2 459 /
   530 vs 459 / 531; KA nb=8 `t` x2 462 / 518 vs 458 / 541.
 
+## Follow-up 7: collapsing rc's lo/hi into one array — and the row order that allows it (job 8135)
+
+Because every column holds exactly one range entry (each arc has exactly
+one head), the rc ranges *partition* the columns: sorted by `lo` they tile
+`1:k` and chain — `hi[i] == lo[i+1]` — so the two bounds arrays collapse
+into a single `rptr` of length m+1, which is literally the adjacency
+matrix's CSC colptr. The chain only holds in **node order**; the exported
+A is in JDS length-sorted row order (`construct_constraint_matrix`'s
+`sortperm` by length), where it doesn't. `bench/spmm_rptr.jl` therefore
+benches the KA rc pm kernel in three variants on TX: the current `lo`/`hi`
+on the matrix as exported, `lo`/`hi` with rows permuted to node order (the
+control that isolates the row order from the array merge), and the single
+`rptr` in node order (`node_order_rptr` in `bench/spmm_formats.jl`; the
+36 in-degree-0 rows get `rptr[i] == rptr[i+1]`). β = 0 path; every variant
+verified against the (row-permuted) reference.
+
+A·B, β = 0, GFLOP/s at n = 8 / 64 / 256:
+
+| KA rc pm | lo/hi, jds order | lo/hi, node order | rptr, node order |
+|---|---|---|---|
+| nb=1 | 374 / 380 / 379 | 498 / 507 / 508 | 503 / 508 / **509** |
+| nb=4 | 233 / 236 / 236 | 342 / 347 / 347 | 360 / 366 / 366 |
+| nb=8 | 155 / 155 / 155 | 365 / 370 / 371 | 374 / 382 / 382 |
+| nb=1 `t` | 275 / 355 / 360 | 385 / 496 / 507 | 395 / 499 / 508 |
+| nb=4 `t` | 236 / 355 / 359 | 387 / 486 / 490 | 399 / 488 / 491 |
+| nb=8 `t` | 226 / 354 / 358 | 360 / 483 / 492 | 369 / 485 / 493 |
+
+(The jds-order column reproduces follow-up 4's baseline within ~2%.)
+
+- **The answer to the question asked: merging lo/hi into rptr is worth
+  0–5%.** At the same row order it's +0.2–1% at nb=1 and in the transposed
+  layout, +3–5% at nb=4/8 standard. Never slower, and it sheds an
+  m-length Int32 array (8.3 MB), so it's free to take — but it is not
+  where the time is.
+- **The row permutation it requires is worth ~34% by itself** and is the
+  real finding: 379 → 508 at nb=1 (both layouts, flat in n), and it
+  rescues the previously pathological nb=8 standard shape (155 → 371).
+  In node order consecutive threads read consecutive B strips — the
+  ranges tile the columns in row order, so the range reads stream through
+  B globally instead of jumping per the length sort — and the scattered
+  gathers inherit the road network's node locality too. 508 GFLOP/s is
+  ~83% of the ~615 A·B roofline from follow-up 4, up from 63%.
+- The permutation is legitimate for the LP: C's row order is a free
+  choice (permute `b`/supply along, exactly as `construct_constraint_matrix`
+  already does for its own length sort). But the length sort exists for
+  JDS's benefit — before switching the shared export to node order, the
+  JDS kernels (whose iterptr construction assumes it) would need
+  re-benching, and cuTile rc + the vision instance haven't been run in
+  node order yet.
+
 ## Reproducing
 
 ```
 julia --project=. bench/spmm_flow.jl 8 64 256          # needs bench/data/*.jls
+julia --project=. bench/spmm_rptr.jl 8 64 256          # follow-up 7 (rptr / node order)
 CUTILE_BACKEND=native julia --project=. bench/spmm_backends.jl 8 64 256  # then triton
 python3 bench/spmm_flow_tables.py ~/spmm-flow-<job>.log  # the tables above
 ```

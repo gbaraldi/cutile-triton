@@ -66,6 +66,43 @@ function split_heavy(rc; maxlen)
     return (; light, heavy)
 end
 
+"""
+    node_order_rptr(rc, ncols) -> (; perm, rptr, lo, hi, inptr, inids)
+
+Row order in which the ranges of `rc` chain: since every column holds exactly
+one range entry, the per-row ranges partition `1:ncols`, so sorted by `lo`
+(empty rows first among ties) they tile it and collapse into a single
+`rptr[i] = lo[i] = hi[i-1]` array of length m+1 — on the incidence matrix in
+node order this is the adjacency matrix's CSC colptr. Returns the permutation,
+the collapsed `rptr`, and the permuted rc arrays (`lo`/`hi` kept alongside as
+the two-array control in the same order). Errors if the ranges don't tile.
+"""
+function node_order_rptr(rc, ncols)
+    (; lo, hi, inptr, inids) = rc
+    m = length(lo)
+    perm = sortperm(eachindex(lo); by=i -> (lo[i], lo[i] == hi[i] ? 0 : 1))
+    plo = lo[perm]; phi = hi[perm]
+    rptr = Vector{Int32}(undef, m + 1)
+    rptr[m + 1] = ncols + 1
+    for i in m:-1:1
+        rptr[i] = plo[i] == phi[i] ? rptr[i + 1] : plo[i]
+    end
+    for i in 1:m
+        ok = plo[i] == phi[i] ? rptr[i] == rptr[i + 1] :
+             rptr[i] == plo[i] && rptr[i + 1] == phi[i]
+        ok || error("node_order_rptr: ranges don't tile at row $i: ",
+                    "[$(plo[i]),$(phi[i])) vs rptr [$(rptr[i]),$(rptr[i + 1]))")
+    end
+    len = diff(inptr)
+    pinptr = Int32[1; cumsum(len[perm]) .+ 1]
+    pinids = similar(inids)
+    for (i, r) in enumerate(perm)
+        src = inptr[r]:(inptr[r + 1] - 1)
+        pinids[pinptr[i]:(pinptr[i + 1] - 1)] = view(inids, src)
+    end
+    return (; perm, rptr, lo=plo, hi=phi, inptr=pinptr, inids=pinids)
+end
+
 "Chunk table of the heavy rows for `chunk` nonzeros per chunk: chunk c belongs
 to heavy row crow[c]; row h owns chunks cptr[h]:cptr[h+1]-1."
 function heavy_chunks(heavy; chunk)
