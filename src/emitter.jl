@@ -1561,7 +1561,10 @@ function region_from_block!(cg::CG, blk::SBlock, res_types::Vector{IR.Type};
     return region
 end
 
-is_token_type(@nospecialize(T)) = nameof(widenconst(T)) === :TokenType
+# The structurizer sometimes carries a token as the singleton instance
+# `TokenType()` (a `Core.Const`-like value) rather than the type itself.
+is_token_type(@nospecialize(T)) =
+    nameof(T isa Type ? T : T isa Core.Const ? widenconst(T) : typeof(T)) === :TokenType
 
 function emit_if!(cg::CG, op::IfOp, @nospecialize(typ))
     T = widenconst(typ)
@@ -1583,9 +1586,11 @@ end
 
 function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
     i32 = IR.Type(Int32)
-    lb = let r = resolve(cg, op.lower); r isa IR.Value ? r : const_i32(Int(r)) end
-    ub = let r = resolve(cg, op.upper); r isa IR.Value ? r : const_i32(Int(r)) end
-    st = let r = resolve(cg, op.step); r isa IR.Value ? r : const_i32(Int(r)) end
+    # The iv block arg is i32 below, so i64 bounds (a Julia `Int` range) are
+    # truncated to match — scf.for requires all three the same type.
+    lb = let r = resolve(cg, op.lower); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
+    ub = let r = resolve(cg, op.upper); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
+    st = let r = resolve(cg, op.step); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
 
     # Tokens (dropped in this backend) may be loop-carried; filter them out
     # of the scf carries by their inferred types (as emit_if! does for branch
