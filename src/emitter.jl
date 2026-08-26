@@ -99,7 +99,11 @@ mutable struct ViewInfo
     contiguous::Bool           # ArraySpec.Contiguous (Julia dim 1 has stride 1)
     desc::Union{Nothing,IR.Value}  # !tt.tensordesc — set when the TMA path is used
     order::Union{Nothing,Vector{Int}}  # dim permutation: tile dim d ↔ array dim order[d]
+    step::Union{Nothing,Vector{Int}}   # tile-origin stride per tile dim (strided view); == tile_shape for partition views
 end
+ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order) =
+    ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order, tile_shape)
+view_step(view::ViewInfo, d::Int) = view.step === nothing ? view.tile_shape[d] : view.step[d]
 
 # Kernel-creation-time switch for the TMA/descriptor lowering (per-view
 # legality still gates it; this is the opt-out).
@@ -395,7 +399,13 @@ function delinearize_index(view::ViewInfo, idxs::Vector{Any})
     for d in 1:N
         size_d = view.sizes[d]
         size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
-        nt = v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
+        nt = if view_step(view, d) == view.tile_shape[d]
+            v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
+        else
+            rem_v = v1(arith.subi(size_v, const_i32(view.tile_shape[d]); result=i32))
+            v1(arith.addi(v1(arith.floordivsi(rem_v, const_i32(view_step(view, d)); result=i32)),
+                          const_i32(1); result=i32))
+        end
         if d < N
             push!(out, v1(arith.remsi(lin, nt; result=i32)))
             lin = v1(arith.divsi(lin, nt; result=i32))
@@ -426,7 +436,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
         S = sh[d]
         idx = idxs[d]
         idx_v = idx isa IR.Value ? as_i32(idx) : const_i32(Int(idx))
-        start = v1(arith.muli(idx_v, const_i32(S); result=i32))
+        start = v1(arith.muli(idx_v, const_i32(view_step(view, d)); result=i32))
         rng = v1(tt.make_range(; result=IR.TensorType([S], i32), start=Int32(0), end_=Int32(S)))
         offs1 = v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], i32))), rng;
                               result=IR.TensorType([S], i32)))
@@ -469,7 +479,7 @@ function desc_offsets(view::ViewInfo, idxs::Vector{Any})
     for d in length(view.tile_shape):-1:1
         idx = idxs[d]
         idx_v = idx isa IR.Value ? as_i32(idx) : const_i32(Int(idx))
-        push!(offs, v1(arith.muli(idx_v, const_i32(view.tile_shape[d]); result=i32)))
+        push!(offs, v1(arith.muli(idx_v, const_i32(view_step(view, d)); result=i32)))
     end
     return offs
 end
@@ -486,7 +496,7 @@ function view_bounds_mask(view::ViewInfo, idxs::Vector{Any})
         S = sh[d]
         idx = idxs[d]
         idx_v = idx isa IR.Value ? as_i32(idx) : const_i32(Int(idx))
-        start = v1(arith.muli(idx_v, const_i32(S); result=i32))
+        start = v1(arith.muli(idx_v, const_i32(view_step(view, d)); result=i32))
         rng = v1(tt.make_range(; result=IR.TensorType([S], i32), start=Int32(0), end_=Int32(S)))
         offs1 = v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], i32))), rng;
                               result=IR.TensorType([S], i32)))
@@ -777,17 +787,41 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
             view.desc = emit_descriptor(view)
         end
         return view
+    elseif f === :make_strided_view
+        # (tensor_view, tile_shape, step, padding, dim_map): like a partition
+        # view, but tile origins advance by `step` instead of `tile_shape`
+        base = resolve(cg, args[1])::ViewInfo
+        shape = resolve(cg, args[2])
+        step = resolve(cg, args[3])
+        pm = Symbol(resolve(cg, args[4]))
+        pad = pm === :Zero ? :zero : pm === :NegInf ? :neginf : :undetermined
+        ord = length(args) >= 5 ? resolve(cg, args[5]) : nothing
+        order = ord isa Tuple ? Int[ord...] : nothing
+        view = ViewInfo(base.ptr, base.sizes, base.strides, base.elty,
+                        Int[shape...], pad, base.contiguous, nothing, order, Int[step...])
+        N = length(view.tile_shape)
+        # descriptors only when the origins stay tile-aligned (plain partition)
+        if order === nothing && view.step == view.tile_shape &&
+           tma_eligible(N, view.tile_shape, pad, view.contiguous, view.elty)
+            view.desc = emit_descriptor(view)
+        end
+        return view
     elseif f === :get_index_space_shape
         view = resolve(cg, args[1])::ViewInfo
         d = Int(resolve(cg, args[2])) + 1   # intrinsic axis is 0-based Julia dim
         size_d = view.sizes[d]
         size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
-        return v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=IR.Type(Int32)))
-    elseif f === :load_partition_view
+        i32 = IR.Type(Int32)
+        view_step(view, d) == view.tile_shape[d] &&
+            return v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
+        rem_v = v1(arith.subi(size_v, const_i32(view.tile_shape[d]); result=i32))
+        return v1(arith.addi(v1(arith.floordivsi(rem_v, const_i32(view_step(view, d)); result=i32)),
+                             const_i32(1); result=i32))
+    elseif f === :load_partition_view || f === :load_strided_view
         view = resolve(cg, args[1])::ViewInfo
         idxs = resolve(cg, args[4])
         return emit_view_load(view, Any[idxs...], cg)
-    elseif f === :store_partition_view
+    elseif f === :store_partition_view || f === :store_strided_view
         view = resolve(cg, args[1])::ViewInfo
         val = asvalue(resolve(cg, args[2]))
         idxs = resolve(cg, args[5])
