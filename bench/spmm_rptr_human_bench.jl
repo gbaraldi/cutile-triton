@@ -6,9 +6,9 @@
 #   SPMM_DATA=flow_TX|vision_rnd_05; override tiles with SPMM_TILES="TM,TN,TK;..."
 #   and the warp count with TRITON_NUM_WARPS (default 8, the sweep winner).
 #
-# The format is the node-order range+CSR (contiguous_ptr = collapsed rptr,
-# scattered_* = the in-CSR) with explicit ±rsign value arrays; C is checked
-# against A*B in node order. Throughput is quoted as GFLOP/s (2·nnz·n / t)
+# The format is the node-order range+CSR (contiguous_lo/hi = the collapsed
+# rptr split into per-row [lo, hi) bounds, scattered_* = the in-CSR) with
+# explicit ±rsign value arrays; C is checked against A*B in node order. Throughput is quoted as GFLOP/s (2·nnz·n / t)
 # and as GB/s of the compulsory traffic (A arrays + B + C once).
 
 using LinearAlgebra, SparseArrays, Random, Printf, Serialization
@@ -46,12 +46,13 @@ function main()
     rc = range_csr(At.colptr, At.rowval, At.nzval)
     no = node_order_rptr(rc, k)
     rsign = T(rc.rsign)
-    # pad the pointer arrays so rows past m (last tile) read in bounds
-    pad(v) = CuArray(Int32[v; 0])
-    Ad = SplitRangeCSRMatrix(pad(no.rptr), CuArray(fill(rsign, k)),
-                             pad(no.inptr), CuArray(no.inids),
+    # contiguous ranges as two length-m arrays (lo, exclusive hi) from the
+    # collapsed rptr; the kernel zero-pads its row loads, so no padding needed
+    clo = Int32.(no.rptr[1:m]); chi = Int32.(no.rptr[2:end])
+    Ad = SplitRangeCSRMatrix(CuArray(clo), CuArray(chi), CuArray(fill(rsign, k)),
+                             CuArray(no.inptr), CuArray(no.inids),
                              CuArray(fill(-rsign, length(no.inids))))
-    abytes = sizeof(no.rptr) + sizeof(no.inptr) + 2sizeof(no.inids) + k * sizeof(T)
+    abytes = sizeof(clo) + sizeof(chi) + sizeof(no.inptr) + 2sizeof(no.inids) + k * sizeof(T)
 
     rng = MersenneTwister(42)
     α, β = T(1), T(0)
