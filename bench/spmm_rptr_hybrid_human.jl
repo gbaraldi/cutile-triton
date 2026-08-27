@@ -1,8 +1,9 @@
-using CUDA.CUDACore.GPUArrays
+using CUDA.cuSPARSE: CuSparseMatrixCSR
 
-struct HybridSparseMatrix{T, Ti, M <: SplitRangeCSRMatrix{T, Ti}, V, Vi} <: AbstractMatrix{T}
+struct HybridSparseMatrix{T, Ti, M <: SplitRangeCSRMatrix{T, Ti}, S, Vi} <: AbstractMatrix{T}
     nice_part::M
-    odd_part::Dict{Ti, Tuple{Vi, V}}
+    odd_part::S       # nodd × k sparse matrix of the heavy rows (CuSparseMatrixCSR)
+    odd_rows::Vi      # their row indices in C
 end
 Base.size(A::HybridSparseMatrix) = size(A.nice_part)
 
@@ -14,17 +15,10 @@ function launch_rc!(C, A::SplitRangeCSRMatrix{T, Ti}, B, α, β, tm, tn, tk, bet
               ct.Constant(tm), ct.Constant(tn), ct.Constant(tk), ct.Constant(beta_nz))
 end
 
-function spmm_hybrid!(C, A::HybridSparseMatrix{T, Ti}, B, α, β, tm, tn, tk, beta_nz) where {T, Ti}
+function spmm_hybrid!(C, A::HybridSparseMatrix{T}, B, α, β, tm, tn, tk, beta_nz) where {T}
     launch_rc!(C, A.nice_part, B, α, β, tm, tn, tk, beta_nz)
-
-    tmp = CuArray{T}(undef, 1, size(B, 2))
-    for (i, (row_indices, values)) in A.odd_part
-        GPUArrays.mapreducedim!(
-            identity, +, tmp,
-            Base.broadcasted(*, view(B, row_indices, :), values);
-            init = zero(T),
-        )
-        C[i:i, :] .+= α .* tmp
-    end
+    tmp = CuMatrix{T}(undef, size(A.odd_part, 1), size(B, 2))
+    mul!(tmp, A.odd_part, B, α, zero(T))
+    C[A.odd_rows, :] .+= tmp
     return C
 end

@@ -78,14 +78,9 @@ function main(Ti::Type{<:Integer} = getfield(Base, Symbol(get(ENV, "SPMM_INT", "
     else
         println("# hybrid: $(length(heavy.row)) heavy rows (> $heavy_maxlen nnz), ",
                 "$(sum(heavy.len)) of $(nnz(A)) nnz handled densely")
-        odd = Dict{Ti, Tuple{CuVector{Ti}, CuMatrix{T}}}()
-        for (h, i) in enumerate(heavy.row)
-            ids = Ti[heavy.lo[h]:(heavy.hi[h] - 1); heavy.ids[heavy.ptr[h]:(heavy.ptr[h + 1] - 1)]]
-            vals = T[fill(rsign, heavy.hi[h] - heavy.lo[h]); fill(-rsign, heavy.ptr[h + 1] - heavy.ptr[h])]
-            odd[i] = (CuArray(ids), CuArray(reshape(vals, :, 1)))
-            abytes += sizeof(ids) + sizeof(vals)
-        end
-        HybridSparseMatrix(nice, odd)
+        odd = odd_csr(heavy, k, rsign)
+        abytes += sizeof(odd.rowval) + sizeof(odd.nzval)
+        HybridSparseMatrix(nice, CuSparseMatrixCSR(odd), CuArray(heavy.row))
     end
 
     rng = MersenneTwister(42)

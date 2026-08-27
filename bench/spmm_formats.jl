@@ -116,3 +116,18 @@ function heavy_chunks(heavy; chunk)
     return (; crow, cptr)
 end
 
+
+"Compressed CSR (nheavy × ncols, `SparseMatrixCSC` with `Int32` indices as
+cuSPARSE wants) of the heavy rows of `split_heavy`: range entries `rsign`,
+scattered ones `-rsign`."
+function odd_csr(heavy, ncols, rsign::T) where {T}
+    I = Int32[]; J = Int32[]; V = T[]
+    for h in eachindex(heavy.row)
+        rng = heavy.lo[h]:(heavy.hi[h] - 1)
+        sc = view(heavy.ids, heavy.ptr[h]:(heavy.ptr[h + 1] - 1))
+        append!(I, fill(Int32(h), length(rng) + length(sc)))
+        append!(J, rng); append!(J, sc)
+        append!(V, fill(rsign, length(rng))); append!(V, fill(-rsign, length(sc)))
+    end
+    return sparse(I, J, V, length(heavy.row), ncols)
+end
