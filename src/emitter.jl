@@ -6,8 +6,9 @@
 #     → triton wheel IRSource compile       (compile_ttir.py)
 #     → CUDA.jl launch                      (TritonRun.jl)
 #
-# Kernel ABI (must match TritonRun.flatten_args): each TileArray{T,N} becomes
-# (ptr::!tt.ptr<T>, sizes::N×i32, strides::N×i32) in Julia dim order; plain
+# Kernel ABI (must match TritonRun.flatten_args): each TileArray{T,N,I} becomes
+# (ptr::!tt.ptr<T>, sizes::N×I, strides::N×I) in Julia dim order (I = i32 or
+# i64, the TileArray's index type — cuTile types the gather offsets by it); plain
 # scalars become one param; Constant{T,V} args are inlined. Triton appends
 # global/profile scratch pointers at launch, not here.
 #
@@ -135,13 +136,13 @@ function emit_descriptor(view::ViewInfo)
     stride_vals = IR.Value[]
     for d in N:-1:1   # reversed (row-major) axis order
         s = view.sizes[d]
-        push!(shape_vals, s isa IR.Value ? s : const_i32(Int(s)))
+        push!(shape_vals, s isa IR.Value ? as_i32(s) : const_i32(Int(s)))
         if d == 1
             push!(stride_vals, const_scalar(1, i64))
         else
             st = view.strides[d]
             stv = st isa IR.Value ? st : const_i32(Int(st))
-            push!(stride_vals, v1(arith.extsi(stv; out=i64)))
+            push!(stride_vals, IR.type(stv) == i64 ? stv : v1(arith.extsi(stv; out=i64)))
         end
     end
     rev_sh = reverse(view.tile_shape)
@@ -169,7 +170,12 @@ struct ArgSpec
     kind::Symbol       # :tilearray | :scalar
     elty::DataType
     ndims::Int         # 0 for scalars
+    idxty::DataType    # TileArray index type (sizes/strides width); Int32 for scalars
 end
+ArgSpec(kind, elty, ndims) = ArgSpec(kind, elty, ndims, Int32)
+"Index type parameter of a TileArray type (Int32 unless declared Int64)."
+tilearray_indextype(@nospecialize(T)) =
+    (T isa DataType && length(T.parameters) >= 3 && T.parameters[3] isa Type) ? T.parameters[3] : Int32
 
 "KernelState handle: carries the implicit trailing seed parameter."
 struct KSVal
@@ -398,7 +404,7 @@ function delinearize_index(view::ViewInfo, idxs::Vector{Any})
     out = Any[]
     for d in 1:N
         size_d = view.sizes[d]
-        size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
+        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
         nt = if view_step(view, d) == view.tile_shape[d]
             v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
         else
@@ -445,7 +451,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
 
         # bounds mask along this dim: offs < size_ad
         size_d = view.sizes[ad]
-        size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
+        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
         size_f = v1(tt.splat(size_v; result=full_t))
         m = v1(arith.cmpi(offs_f, size_f; predicate=IR.Attribute(Int64(2)), # slt
                           result=IR.TensorType(reverse(sh), IR.Type(Bool))))
@@ -457,7 +463,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
         contrib = if stride_d isa Int && stride_d == 1
             offs_f
         else
-            stride_v = stride_d isa IR.Value ? stride_d : const_i32(Int(stride_d))
+            stride_v = stride_d isa IR.Value ? as_i32(stride_d) : const_i32(Int(stride_d))
             stride_f = v1(tt.splat(stride_v; result=full_t))
             v1(arith.muli(offs_f, stride_f; result=full_t))
         end
@@ -502,7 +508,7 @@ function view_bounds_mask(view::ViewInfo, idxs::Vector{Any})
                               result=IR.TensorType([S], i32)))
         offs_f = expand_to_full(offs1, sh, d, i32)
         size_d = view.sizes[ad]
-        size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
+        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
         size_f = v1(tt.splat(size_v; result=IR.type(offs_f)))
         m = v1(arith.cmpi(offs_f, size_f; predicate=IR.Attribute(Int64(2)),
                           result=IR.TensorType(reverse(sh), IR.Type(Bool))))
@@ -810,7 +816,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         view = resolve(cg, args[1])::ViewInfo
         d = Int(resolve(cg, args[2])) + 1   # intrinsic axis is 0-based Julia dim
         size_d = view.sizes[d]
-        size_v = size_d isa IR.Value ? size_d : const_i32(Int(size_d))
+        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
         i32 = IR.Type(Int32)
         view_step(view, d) == view.tile_shape[d] &&
             return v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
@@ -1745,12 +1751,13 @@ function arg_mlir_types!(out::Vector{IR.Type}, attrs::Vector{IR.Attribute}, @nos
         push!(out, IR.OpaqueType("tt", "ptr<" * string(storage_type(eltype(T))) * ">"))
         align, contig, sdiv, shdiv = _spec_params(T)
         push!(attrs, _divattr(_div16(align)))
+        ity = IR.Type(tilearray_indextype(T))
         for d in 1:ndims(T)   # sizes
-            push!(out, i32)
+            push!(out, ity)
             push!(attrs, _divattr(_div16(d <= length(shdiv) ? shdiv[d] : 0)))
         end
         for d in 1:ndims(T)   # strides
-            push!(out, i32)
+            push!(out, ity)
             push!(attrs, _divattr(_div16(d <= length(sdiv) ? sdiv[d] : 0)))
         end
     elseif Base.issingletontype(T)
@@ -1825,7 +1832,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
             AT isa Core.Const && continue
             T = widenconst(AT)
             arg_mlir_types!(param_types, arg_attr_dicts, T)
-            push!(argspec, T <: ct.TileArray ? ArgSpec(:tilearray, eltype(T), ndims(T)) :
+            push!(argspec, T <: ct.TileArray ? ArgSpec(:tilearray, eltype(T), ndims(T), tilearray_indextype(T)) :
                            T <: Number ? ArgSpec(:scalar, T, 0) : ArgSpec(:other, Nothing, 0))
         end
 

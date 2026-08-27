@@ -204,11 +204,11 @@ function flatten_args(spec::Vector{ArgSpec}, args)
                 push!(types, Ptr{s.elty}); push!(vals, Ptr{s.elty}(UInt(p)))
             end
             for d in 1:s.ndims
-                push!(types, Int32); push!(vals, Int32(size(a, d)))
+                push!(types, s.idxty); push!(vals, s.idxty(size(a, d)))
             end
             st = strides(a)
             for d in 1:s.ndims
-                push!(types, Int32); push!(vals, Int32(st[d]))
+                push!(types, s.idxty); push!(vals, s.idxty(st[d]))
             end
         else
             push!(types, s.elty); push!(vals, s.elty(a))

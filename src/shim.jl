@@ -48,8 +48,9 @@ function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x), cu
         else
             push!(types, Ptr{ET}); push!(vals, Ptr{ET}(x.ptr))
         end
-        for s in x.sizes;   push!(types, Int32); push!(vals, s); end
-        for s in x.strides; push!(types, Int32); push!(vals, s); end
+        # sizes/strides carry the TileArray's index type (Int32 or Int64)
+        for s in x.sizes;   push!(types, typeof(s)); push!(vals, s); end
+        for s in x.strides; push!(types, typeof(s)); push!(vals, s); end
     elseif Base.issingletontype(T)
         # ghost (Constant etc.) — contributes nothing
     elseif isprimitivetype(T)
