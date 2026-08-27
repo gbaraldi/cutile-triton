@@ -10,14 +10,15 @@ column range `[lo, hi)` of the entries with sign `rsign` and a CSR
 gives a contiguous range in every row.
 """
 function range_csr(rowptr, colval, nzval)
+    Ti = eltype(colval)          # index type of the result arrays
     m = length(rowptr) - 1
     for rsign in (-1, 1)
-        lo = ones(Int32, m); hi = ones(Int32, m)
-        inptr = Vector{Int32}(undef, m + 1); inptr[1] = 1
-        inids = sizehint!(Int32[], length(colval) ÷ 2)
+        lo = ones(Ti, m); hi = ones(Ti, m)
+        inptr = Vector{Ti}(undef, m + 1); inptr[1] = 1
+        inids = sizehint!(Ti[], length(colval) ÷ 2)
         ok = true
         for i in 1:m
-            cnt = 0; first = typemax(Int32); last = Int32(0)
+            cnt = 0; first = typemax(Ti); last = Ti(0)
             for p in rowptr[i]:(rowptr[i + 1] - 1)
                 if sign(nzval[p]) == rsign
                     cnt += 1; first = min(first, colval[p]); last = max(last, colval[p])
@@ -44,18 +45,19 @@ ranges and scattered ids as a small CSR (`ptr`, `ids`).
 """
 function split_heavy(rc; maxlen)
     (; lo, hi, inptr, inids) = rc
+    Ti = eltype(inids)
     m = length(lo)
     len = (hi .- lo) .+ diff(inptr)
     llo = copy(lo); lhi = copy(hi)
     linptr = similar(inptr); linptr[1] = 1
-    linids = Int32[]
-    hrow = Int32[]; hptr = Int32[1]; hids = Int32[]
+    linids = Ti[]
+    hrow = Ti[]; hptr = Ti[1]; hids = Ti[]
     for i in 1:m
         rng = inptr[i]:(inptr[i + 1] - 1)
         if len[i] > maxlen
             push!(hrow, i)
             lhi[i] = llo[i]
-            append!(hids, view(inids, rng)); push!(hptr, Int32(length(hids) + 1))
+            append!(hids, view(inids, rng)); push!(hptr, Ti(length(hids) + 1))
         else
             append!(linids, view(inids, rng))
         end
@@ -79,10 +81,11 @@ the two-array control in the same order). Errors if the ranges don't tile.
 """
 function node_order_rptr(rc, ncols)
     (; lo, hi, inptr, inids) = rc
+    Ti = eltype(inids)
     m = length(lo)
     perm = sortperm(eachindex(lo); by=i -> (lo[i], lo[i] == hi[i] ? 0 : 1))
     plo = lo[perm]; phi = hi[perm]
-    rptr = Vector{Int32}(undef, m + 1)
+    rptr = Vector{Ti}(undef, m + 1)
     rptr[m + 1] = ncols + 1
     for i in m:-1:1
         rptr[i] = plo[i] == phi[i] ? rptr[i + 1] : plo[i]
@@ -94,7 +97,7 @@ function node_order_rptr(rc, ncols)
                     "[$(plo[i]),$(phi[i])) vs rptr [$(rptr[i]),$(rptr[i + 1]))")
     end
     len = diff(inptr)
-    pinptr = Int32[1; cumsum(len[perm]) .+ 1]
+    pinptr = Ti[1; cumsum(len[perm]) .+ 1]
     pinids = similar(inids)
     for (i, r) in enumerate(perm)
         src = inptr[r]:(inptr[r + 1] - 1)
@@ -106,9 +109,10 @@ end
 "Chunk table of the heavy rows for `chunk` nonzeros per chunk: chunk c belongs
 to heavy row crow[c]; row h owns chunks cptr[h]:cptr[h+1]-1."
 function heavy_chunks(heavy; chunk)
+    Ti = eltype(heavy.ids)
     nch = cld.(heavy.len, chunk)
-    cptr = Int32[1; cumsum(nch) .+ 1]
-    crow = Int32[h for h in eachindex(nch) for _ in 1:nch[h]]
+    cptr = Ti[1; cumsum(nch) .+ 1]
+    crow = Ti[h for h in eachindex(nch) for _ in 1:nch[h]]
     return (; crow, cptr)
 end
 
