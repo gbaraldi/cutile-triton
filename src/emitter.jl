@@ -1405,6 +1405,10 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         # fast-math mode scoping: Triton has no region-scoped fp modes; ops
         # default to its standard fast-math behavior. Accept and ignore.
         return nothing
+    elseif f === :Tile && length(args) == 1
+        # 0-D tile of a scalar: Triton has no rank-0 tensors; scalars already
+        # broadcast against tiles wherever a 0-D tile would.
+        return resolve(cg, args[1])
     end
 
     error("walk_call!: unhandled intrinsic $f (args=$args)")
