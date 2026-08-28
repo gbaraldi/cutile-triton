@@ -1,6 +1,4 @@
 import cuTile as ct
-using CUDA
-using CUDA: i32
 
 struct SplitRangeCSRMatrix{T, Ti, V1, V2, Vi1, Vi2, Vi3} <: AbstractMatrix{T}
     contiguous_lo::Vi1
@@ -19,17 +17,18 @@ Base.size(A::SplitRangeCSRMatrix) = (length(A.contiguous_lo), length(A.contiguou
 function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE_N, TILE_K, BETA_NZ) where {T, I}
     (; contiguous_lo, contiguous_hi, contiguous_vals, scattered_ptr, scattered_inds, scattered_vals) = A
     m, n = ct.bid(1), ct.bid(2)
-    col_indices = reshape((n - I(1)) * TILE_N .+ ct.arange(TILE_N), 1, 1, TILE_N)
+    row_indices = (m - I(1)) * I(TILE_M) .+ ct.arange(TILE_M)
+    col_indices = reshape((n - I(1)) * I(TILE_N) .+ ct.arange(TILE_N), 1, 1, TILE_N)
 
     k₀ = reshape(ct.arange(TILE_K), 1, TILE_K)
 
-    contiguous_start = ct.eachtile(contiguous_lo, (TILE_M,); padding_mode = ct.PaddingMode.Zero)[m]
+    contiguous_start = ct.gather(contiguous_lo, row_indices)
     contiguous_offset = contiguous_start .- I(1)
-    contiguous_length = ct.eachtile(contiguous_hi, (TILE_M,); padding_mode = ct.PaddingMode.Zero)[m] .- contiguous_start
+    contiguous_length = ct.gather(contiguous_hi, row_indices) .- contiguous_start
 
-    scattered_start = ct.eachtile(scattered_ptr, (TILE_M,); padding_mode = ct.PaddingMode.Zero)[m]
+    scattered_start = ct.gather(scattered_ptr, row_indices)
     scattered_offset = scattered_start .- I(1)
-    scattered_length = ct.eachtile(scattered_ptr, (TILE_M,); step = (1,), padding_mode = ct.PaddingMode.Zero)[(m - I(1)) * TILE_M + I(2)] .- scattered_start
+    scattered_length = ct.gather(scattered_ptr, row_indices .+ I(1)) .- scattered_start
 
     total_iters = cld(maximum(contiguous_length .+ scattered_length), I(TILE_K))
     acc = zeros(T, TILE_M, TILE_N)
@@ -39,12 +38,12 @@ function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE
 
         contiguous_mask = k .≤ contiguous_length
         contiguous_i = contiguous_offset .+ k
-        contiguous_v = ct.gather(contiguous_vals, contiguous_i; mask = contiguous_mask, padding_value = zero(T))
+        contiguous_v = ct.gather(contiguous_vals, contiguous_i; mask = contiguous_mask)
 
         scattered_ptrs = scattered_offset .+ (k .- contiguous_length)
         scattered_mask = contiguous_length .< k .≤ contiguous_length .+ scattered_length
-        scattered_i = ct.gather(scattered_inds, scattered_ptrs; mask = scattered_mask, padding_value = I(0))
-        scattered_v = ct.gather(scattered_vals, scattered_ptrs; mask = scattered_mask, padding_value = zero(T))
+        scattered_i = ct.gather(scattered_inds, scattered_ptrs; mask = scattered_mask)
+        scattered_v = ct.gather(scattered_vals, scattered_ptrs; mask = scattered_mask)
 
         i = ifelse.(contiguous_mask, contiguous_i, scattered_i)
         b_vals = ct.gather(B, (i, col_indices))
@@ -55,9 +54,9 @@ function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE
 
     res = α .* acc
     if BETA_NZ
-        res = res .+ β .* ct.eachtile(C, (TILE_M, TILE_N))[m, n]
+        res = res .+ β .* ct.load(C, (m, n), (TILE_M, TILE_N))
     end
-    ct.eachtile(C, (TILE_M, TILE_N))[m, n] = res
+    ct.store(C, (m, n), res)
 
     return nothing
 end
