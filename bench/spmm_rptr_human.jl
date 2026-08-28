@@ -2,16 +2,16 @@ import cuTile as ct
 using CUDA
 using CUDA: i32
 
-struct SplitRangeCSRMatrix{T, Ti, V, Vi1, Vi2, Vi3} <: AbstractMatrix{T}
+struct SplitRangeCSRMatrix{T, Ti, V1, V2, Vi1, Vi2, Vi3} <: AbstractMatrix{T}
     contiguous_lo::Vi1
     contiguous_hi::Vi1
-    contiguous_vals::V
+    contiguous_vals::V1
     scattered_ptr::Vi2
     scattered_inds::Vi3
-    scattered_vals::V
+    scattered_vals::V2
 end
-SplitRangeCSRMatrix(ch::Vi1, cl::Vi1, cv::V, sp::Vi2, si::Vi3, sv::V) where {V, Vi1, Vi2, Vi3} =
-    SplitRangeCSRMatrix{eltype(V), eltype(Vi1), V, Vi1, Vi2, Vi3}(ch, cl, cv, sp, si, sv)
+SplitRangeCSRMatrix(ch::Vi1, cl::Vi1, cv::V1, sp::Vi2, si::Vi3, sv::V2) where {V1, V2, Vi1, Vi2, Vi3} =
+    SplitRangeCSRMatrix{eltype(V1), eltype(Vi1), V1, V2, Vi1, Vi2, Vi3}(ch, cl, cv, sp, si, sv)
 
 Adapt.@adapt_structure SplitRangeCSRMatrix
 Base.size(A::SplitRangeCSRMatrix) = (length(A.contiguous_lo), length(A.contiguous_vals))
