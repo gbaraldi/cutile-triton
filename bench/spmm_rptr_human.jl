@@ -14,7 +14,7 @@ SplitRangeCSRMatrix(ch::Vi1, cl::Vi1, cv::V1, sp::Vi2, si::Vi3, sv::V2) where {V
 Adapt.@adapt_structure SplitRangeCSRMatrix
 Base.size(A::SplitRangeCSRMatrix) = (length(A.contiguous_lo), length(A.contiguous_vals))
 
-function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE_N, TILE_K, BETA_NZ) where {T, I}
+function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE_N, TILE_K, BETA_NZ, ::Type{ACC} = eltype(C)) where {T, I, ACC}
     (; contiguous_lo, contiguous_hi, contiguous_vals, scattered_ptr, scattered_inds, scattered_vals) = A
     m, n = ct.bid(1), ct.bid(2)
     row_indices = (m - I(1)) * I(TILE_M) .+ ct.arange(TILE_M)
@@ -31,7 +31,7 @@ function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE
     scattered_length = ct.gather(scattered_ptr, row_indices .+ I(1)) .- scattered_start
 
     total_iters = cld(maximum(contiguous_length .+ scattered_length), I(TILE_K))
-    acc = zeros(T, TILE_M, TILE_N)
+    acc = zeros(ACC, TILE_M, TILE_N)
 
     for t in I(1):total_iters
         k = (t - I(1)) * I(TILE_K) .+ k₀
@@ -46,17 +46,18 @@ function spmm_rc_kernel(C, A::SplitRangeCSRMatrix{T, I}, B, α, β, TILE_M, TILE
         scattered_v = ct.gather(scattered_vals, scattered_ptrs; mask = scattered_mask)
 
         i = ifelse.(contiguous_mask, contiguous_i, scattered_i)
-        b_vals = ct.gather(B, (i, col_indices))
-        dot = dropdims(sum((contiguous_v .+ scattered_v) .* b_vals; dims = 2); dims = 2)
+        v = convert(ct.Tile{ACC}, contiguous_v .+ scattered_v)
+        b_vals = convert(ct.Tile{ACC}, ct.gather(B, (i, col_indices)))
+        dot = dropdims(sum(v .* b_vals; dims = 2); dims = 2)
 
         acc = acc .+ dot
     end
 
-    res = α .* acc
+    res = ACC(α) .* acc
     if BETA_NZ
-        res = res .+ β .* ct.load(C, (m, n), (TILE_M, TILE_N))
+        res = res .+ ACC(β) .* convert(ct.Tile{ACC}, ct.load(C, (m, n), (TILE_M, TILE_N)))
     end
-    ct.store(C, (m, n), res)
+    ct.store(C, (m, n), convert(ct.Tile{eltype(C)}, res))
 
     return nothing
 end

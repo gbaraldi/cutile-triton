@@ -9,7 +9,7 @@ TwoPerRowMatrix(inds::Vi, vals::V) where {V, Vi} =
 
 Adapt.@adapt_structure TwoPerRowMatrix
 
-function spmm_2pr_kernel(C, A::TwoPerRowMatrix{T, I}, B, α, β, TILE_M, TILE_N, BETA_NZ, ::Type{ACC} = T) where {T, I, ACC}
+function spmm_2pr_kernel(C, A::TwoPerRowMatrix{T, I}, B, α, β, TILE_M, TILE_N, BETA_NZ, ::Type{ACC} = eltype(C)) where {T, I, ACC}
     (; inds, vals) = A
     m, n = ct.bid(1), ct.bid(2)
     col_indices = reshape((n - I(1)) * I(TILE_N) .+ ct.arange(TILE_N), 1, 1, TILE_N)
@@ -22,7 +22,7 @@ function spmm_2pr_kernel(C, A::TwoPerRowMatrix{T, I}, B, α, β, TILE_M, TILE_N,
     if BETA_NZ
         res = res .+ ACC(β) .* convert(ct.Tile{ACC}, ct.load(C, (m, n), (TILE_M, TILE_N)))
     end
-    ct.store(C, (m, n), convert(ct.Tile{T}, res))
+    ct.store(C, (m, n), convert(ct.Tile{eltype(C)}, res))
 
     return nothing
 end

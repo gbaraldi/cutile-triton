@@ -16,7 +16,7 @@ end
 Adapt.@adapt_structure HeavyRowChunks
 
 # Pass 1: partial[c, :] = A[h, :] * B[:, cols] restricted to the entries of chunk c.
-function spmm_heavy_kernel(partial, H::HeavyRowChunks{T, I}, B, TILE_N, TILE_K, CHUNK) where {T, I}
+function spmm_heavy_kernel(partial, H::HeavyRowChunks{T, I}, B, TILE_N, TILE_K, CHUNK, ::Type{ACC} = eltype(partial)) where {T, I, ACC}
     (; contiguous_lo, contiguous_hi, contiguous_vals, scattered_ptr, scattered_inds, scattered_vals) = H.A
     c, n = ct.bid(1), ct.bid(2)
     col_indices = reshape((n - I(1)) * I(TILE_N) .+ ct.arange(TILE_N), 1, 1, TILE_N)
@@ -34,7 +34,7 @@ function spmm_heavy_kernel(partial, H::HeavyRowChunks{T, I}, B, TILE_N, TILE_K, 
     scattered_offset = scattered_start - I(1)
     scattered_length = scattered_ptr[h + I(1)] - scattered_start
 
-    acc = zeros(T, 1, TILE_N)
+    acc = zeros(ACC, 1, TILE_N)
 
     for t in I(1):I(CHUNK ÷ TILE_K)
         k = chunk_offset + (t - I(1)) * I(TILE_K) .+ k₀
@@ -49,8 +49,9 @@ function spmm_heavy_kernel(partial, H::HeavyRowChunks{T, I}, B, TILE_N, TILE_K, 
         scattered_v = ct.gather(scattered_vals, scattered_ptrs; mask = scattered_mask)
 
         i = ifelse.(contiguous_mask, contiguous_i, scattered_i)
-        b_vals = ct.gather(B, (i, col_indices))
-        dot = dropdims(sum((contiguous_v .+ scattered_v) .* b_vals; dims = 2); dims = 2)
+        v = convert(ct.Tile{ACC}, contiguous_v .+ scattered_v)
+        b_vals = convert(ct.Tile{ACC}, ct.gather(B, (i, col_indices)))
+        dot = dropdims(sum(v .* b_vals; dims = 2); dims = 2)
 
         acc = acc .+ dot
     end
@@ -62,7 +63,7 @@ end
 
 # Pass 2: C[row[h], cols] += α * sum(partial[chunk_ptr[h]:chunk_ptr[h+1]-1, cols]; dims = 1).
 # The light-row kernel has already written α*0 + β*C for the heavy rows.
-function spmm_heavy_reduce_kernel(C, partial, H::HeavyRowChunks{T, I}, α, TILE_C, TILE_N) where {T, I}
+function spmm_heavy_reduce_kernel(C, partial, H::HeavyRowChunks{T, I}, α, TILE_C, TILE_N, ::Type{ACC} = eltype(partial)) where {T, I, ACC}
     h, n = ct.bid(1), ct.bid(2)
     col_indices = reshape((n - I(1)) * I(TILE_N) .+ ct.arange(TILE_N), 1, TILE_N)
 
@@ -73,7 +74,7 @@ function spmm_heavy_reduce_kernel(C, partial, H::HeavyRowChunks{T, I}, α, TILE_
     chunk_length = H.chunk_ptr[h + I(1)] - chunk_start
 
     total_iters = cld(chunk_length, I(TILE_C))
-    acc = zeros(T, TILE_C, TILE_N)
+    acc = zeros(ACC, TILE_C, TILE_N)
 
     for t in I(1):total_iters
         c = chunk_offset + (t - I(1)) * I(TILE_C) .+ c₀
@@ -82,8 +83,8 @@ function spmm_heavy_reduce_kernel(C, partial, H::HeavyRowChunks{T, I}, α, TILE_
     end
 
     row = ct.Tile(H.row[h])
-    res = ct.gather(C, (row, col_indices)) .+ α .* sum(acc; dims = 1)
-    ct.scatter(C, (row, col_indices), res)
+    res = convert(ct.Tile{ACC}, ct.gather(C, (row, col_indices))) .+ ACC(α) .* sum(acc; dims = 1)
+    ct.scatter(C, (row, col_indices), convert(ct.Tile{eltype(C)}, res))
 
     return nothing
 end
