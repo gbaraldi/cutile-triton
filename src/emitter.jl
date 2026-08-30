@@ -6,7 +6,7 @@
 #     → triton wheel IRSource compile       (compile_ttir.py)
 #     → CUDA.jl launch                      (TritonRun.jl)
 #
-# Kernel ABI (must match TritonRun.flatten_args): each TileArray{T,N,I} becomes
+# Kernel ABI (must match TritonRun.abi_types / flatten_vals): each TileArray{T,N,I} becomes
 # (ptr::!tt.ptr<T>, sizes::N×I, strides::N×I) in Julia dim order (I = i32 or
 # i64, the TileArray's index type — cuTile types the gather offsets by it); plain
 # scalars become one param; Constant{T,V} args are inlined. Triton appends

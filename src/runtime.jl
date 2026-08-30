@@ -27,8 +27,10 @@ set_target!(backend, arch, warp_size) =
 function _default_target()
     t = ACTIVE_TARGET[]
     t !== nothing && return t
+    # queried once: every launch consults the target, and the device
+    # attribute queries cost microseconds
     sm = CUDA.capability(CUDA.device())
-    TargetInfo("cuda", sm.major * 10 + sm.minor, 32, "cubin")
+    return set_target!(TargetInfo("cuda", sm.major * 10 + sm.minor, 32, "cubin"))
 end
 
 # pluggable module-load and raw-launch (the AMDGPU extension replaces these
@@ -45,8 +47,15 @@ function _cuda_load(bin, name, shared)
     end
     return mod, fun
 end
-_cuda_launch(fun, types, vals; threads, blocks, shmem) =
-    cudacall(fun, Tuple{types...}, vals...; threads, blocks, shmem)
+# `vals` already carry their ABI types (see `flatten_vals` and the shim's
+# `flatten_leaves`), so the launch takes a concretely typed tuple: argument
+# packing then specializes once per signature. `cudacall` with a runtime
+# `Tuple{types...}` converts every argument dynamically, which costs ~0.5 µs
+# per parameter — 15–20 µs for kernels taking many TileArrays.
+function _cuda_launch(fun, types, vals; threads, blocks, shmem)
+    args = Tuple(vals)
+    CUDA.launch(fun, args...; threads, blocks, shmem)
+end
 
 # lazy one-time imports (the wheel import costs ~1s once per session,
 # vs. per-kernel with the previous subprocess driver)
@@ -93,6 +102,7 @@ struct TritonKernel
     global_scratch_size::Int
     argspec::Vector{ArgSpec}
     ttir::String
+    abi_types::Vector{Any}   # flattened ABI parameter types, fixed per kernel
 end
 
 function jint(md, key, default)
@@ -204,13 +214,36 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
                 attrs[CUDA.FUNC_ATTRIBUTE_NUM_REGS], "\tlocal=",
                 attrs[CUDA.FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES], "\tshared=$shared")
     end
-    return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir)
+    return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir,
+                        abi_types(argspec))
 end
 
 # Flatten runtime arguments to the kernel ABI: TileArray → (ptr, sizes..., strides...).
-function flatten_args(spec::Vector{ArgSpec}, args)
-    length(spec) == length(args) || error("expected $(length(spec)) kernel arguments")
+"ABI parameter types for `spec`: per TileArray a pointer, its sizes and its
+strides; scalars as is; then the KernelState seed and the two scratch
+pointers (triton >= 3.2 ABI)."
+function abi_types(spec::Vector{ArgSpec})
+    cuda = _default_target().backend == "cuda"
     types = Any[]
+    for s in spec
+        if s.kind === :tilearray
+            push!(types, cuda ? CuPtr{s.elty} : Ptr{s.elty})
+            for _ in 1:(2 * s.ndims)
+                push!(types, s.idxty)
+            end
+        else
+            push!(types, s.elty)
+        end
+    end
+    push!(types, UInt32)
+    PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
+    push!(types, PT); push!(types, PT)
+    return types
+end
+
+"Argument values in the order of `abi_types(spec)`."
+function flatten_vals(spec::Vector{ArgSpec}, args)
+    length(spec) == length(args) || error("expected $(length(spec)) kernel arguments")
     vals = Any[]
     cuda = _default_target().backend == "cuda"
     for (s, a) in zip(spec, args)
@@ -219,30 +252,22 @@ function flatten_args(spec::Vector{ArgSpec}, args)
             eltype(a) === s.elty || error("eltype mismatch: $(eltype(a)) vs $(s.elty)")
             ndims(a) == s.ndims || error("ndims mismatch")
             p = pointer(a)
-            if cuda
-                push!(types, CuPtr{s.elty}); push!(vals, p)
-            else
-                push!(types, Ptr{s.elty}); push!(vals, Ptr{s.elty}(UInt(p)))
-            end
+            push!(vals, cuda ? p : Ptr{s.elty}(UInt(p)))
             for d in 1:s.ndims
-                push!(types, s.idxty); push!(vals, s.idxty(size(a, d)))
+                push!(vals, s.idxty(size(a, d)))
             end
             st = strides(a)
             for d in 1:s.ndims
-                push!(types, s.idxty); push!(vals, s.idxty(st[d]))
+                push!(vals, s.idxty(st[d]))
             end
         else
-            push!(types, s.elty); push!(vals, s.elty(a))
+            push!(vals, s.elty(a))
         end
     end
-    # implicit KernelState seed (mirrors cuTile's ABI)
-    push!(types, UInt32); push!(vals, Base.rand(UInt32))
-    # trailing global-scratch and profile-scratch pointers (triton >= 3.2 ABI)
-    PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
+    push!(vals, Base.rand(UInt32))                 # implicit KernelState seed
     NULLP = cuda ? CU_NULL : Ptr{Cvoid}(0)
-    push!(types, PT); push!(vals, NULLP)
-    push!(types, PT); push!(vals, NULLP)
-    return Tuple{types...}, vals
+    push!(vals, NULLP); push!(vals, NULLP)         # global and profile scratch
+    return vals
 end
 
 """
@@ -252,7 +277,8 @@ end
 arguments in order, skipping `ct.Constant` slots.
 """
 function launch!(k::TritonKernel, grid, args...)
-    tt, vals = flatten_args(k.argspec, collect(args))
+    vals = flatten_vals(k.argspec, args)
+    types = k.abi_types
     g = grid isa Integer ? (Int(grid), 1, 1) : (length(grid) == 2 ? (grid[1], grid[2], 1) : grid)
     # TMA descriptors are built in global scratch memory; size it like
     # Python's launcher: grid volume × num_ctas × per-CTA scratch.
@@ -263,7 +289,7 @@ function launch!(k::TritonKernel, grid, args...)
     end
     GC.@preserve scratch begin
         launchf = _raw_launch[] === nothing ? _cuda_launch : _raw_launch[]
-        launchf(k.fun, collect(tt.parameters), vals;
+        launchf(k.fun, types, vals;
                 threads=k.num_warps * k.warp_size, blocks=g, shmem=k.shared)
     end
     return nothing

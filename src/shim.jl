@@ -11,7 +11,11 @@ mutable struct ShimKernel{F, TT} <: AbstractKernel{F, TT}
     candidates::Vector{TritonRun.TritonKernel}
     chosen::Int          # 0 = not yet tuned
     f::F
+    # ABI parameter types of the flattened arguments (plus the trailing seed
+    # and scratch pointers), fixed per specialization; filled on first launch
+    abi_types::Union{Nothing, Vector{Any}}
 end
+ShimKernel{F, TT}(cands, chosen, f) where {F, TT} = ShimKernel{F, TT}(cands, chosen, f, nothing)
 
 const KERNEL_CACHE = Dict{Any, Any}()
 
@@ -51,7 +55,7 @@ function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x), cu
         # sizes/strides carry the TileArray's index type (Int32 or Int64)
         for s in x.sizes;   push!(types, typeof(s)); push!(vals, s); end
         for s in x.strides; push!(types, typeof(s)); push!(vals, s); end
-    elseif Base.issingletontype(T)
+    elseif Base.issingletontype(T) || T <: Type   # ghosts and type objects (compile-time constants)
         # ghost (Constant etc.) — contributes nothing
     elseif isprimitivetype(T)
         push!(types, T); push!(vals, x)
@@ -132,17 +136,43 @@ function _restore!(regions, snaps)
     return nothing
 end
 
+# Leaf values of one kernel argument in ABI order, as a tuple: the traversal
+# is unrolled per argument type so a launch does no dynamic field walking.
+@generated function flatten_leaves(x, ::Val{cuda}) where {cuda}
+    T = x
+    if T <: ct.TileArray
+        ET = eltype(T)
+        ptr = cuda ? :(CuPtr{$ET}(UInt(x.ptr))) : :(Ptr{$ET}(x.ptr))
+        return :((($ptr,)..., x.sizes..., x.strides...))
+    elseif Base.issingletontype(T) || T <: Type   # ghosts and type objects (compile-time constants)
+        return :(())
+    elseif isprimitivetype(T)
+        return :((x,))
+    else
+        parts = [:(flatten_leaves(getfield(x, $i), Val(cuda))) for i in 1:fieldcount(T)]
+        return :(tuple($([:($p...) for p in parts]...)))
+    end
+end
+
 function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwargs...)
     cuda = _iscuda()
-    types = Any[]; vals = Any[]
-    for a in args
-        flatten_rt!(types, vals, a, cuda)
-    end
-    push!(types, UInt32); push!(vals, Base.rand(UInt32))  # KernelState seed
     PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
     NULLP = cuda ? CU_NULL : Ptr{Cvoid}(0)
-    push!(types, PT); push!(vals, NULLP)   # global scratch
-    push!(types, PT); push!(vals, NULLP)   # profile scratch
+    if k.abi_types === nothing
+        types = Any[]; vals = Any[]
+        for a in args
+            flatten_rt!(types, vals, a, cuda)
+        end
+        push!(types, UInt32)   # KernelState seed
+        push!(types, PT)       # global scratch
+        push!(types, PT)       # profile scratch
+        k.abi_types = types
+    end
+    types = k.abi_types
+    leaves = flatten_leaves(args, Val(cuda))
+    vals = Any[leaves..., Base.rand(UInt32), NULLP, NULLP]
+    length(vals) == length(types) ||
+        error("kernel argument flattening produced $(length(vals)) values for $(length(types)) ABI slots")
     g = blocks isa Integer ? (Int(blocks), 1, 1) :
         length(blocks) == 2 ? (blocks[1], blocks[2], 1) : Tuple(blocks)
     if k.chosen == 0
