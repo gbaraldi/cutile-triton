@@ -82,6 +82,26 @@ function __init__()
         end
         return nothing
     end
+    # Upstream bugfix (candidate PR for cuTile.jl): the optimizer's one
+    # `inplace=true` rewrite rule — comparison strength reduction of
+    # `cmpi(addi(a, addi(b, 1)), y, ≤, signed)` → `cmpi(addi(a, b), y, <)` in
+    # NORMALIZATION_RULES — mutates the matched addi chain IN PLACE without
+    # checking that it is single-use. When the 1-based index feeds both a mask
+    # comparison and a gather/scatter (whose lowering subtracts 1), e.g.
+    #     c = off .+ ct.arange(N); mask = c .≤ lim
+    #     ct.gather(A, (c, cols); mask)
+    # the shared `addi(off, addi(iota, 1))` is rewritten to 0-based for the
+    # comparison, but the gather's `subi(c, 1)` still refers to it — every
+    # gathered element shifts down by one row (hit by spmm_heavy_reduce_kernel;
+    # whether it fires depends on worklist pop order, so e.g. an extra
+    # `reshape` on the index tile masks it). Demoting the rule to the ordinary
+    # non-inplace mode is always sound and keeps the optimization: the rewrite
+    # then builds fresh ops and replaces only the matched root cmpi, leaving
+    # shared sub-ops intact for their other users (DCE removes them when dead).
+    for (i, r) in pairs(ct.NORMALIZATION_RULES)
+        r.inplace || continue
+        ct.NORMALIZATION_RULES[i] = ct.RewriteRule(r.lhs, r.rhs, r.guard, false)
+    end
     return nothing
 end
 
