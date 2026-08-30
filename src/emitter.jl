@@ -336,6 +336,31 @@ function as_i32(v::IR.Value)
     return v1(arith.trunci(v; out=IR.Type(Int32)))
 end
 
+"Coerce a scalar integer Value to the given integer type (trunc or sext)."
+function as_int(v::IR.Value, ty)
+    IR.type(v) == ty && return v
+    ty == IR.Type(Int32) && return as_i32(v)
+    return v1(arith.extsi(v; out=ty))
+end
+
+const_int(x::Integer, ty) = ty == IR.Type(Int32) ? const_i32(Int(x)) : const_scalar(Int64(x), ty)
+
+"""
+Offset type for a view's pointer arithmetic: i64 when any size/stride is a
+64-bit Value or a constant beyond Int32 (an Int64-indexed TileArray), else
+i32. The flat element offset of a > 2^31-element array overflows i32 even
+when every per-dim size and stride fits in 32 bits, so the whole
+offs*stride accumulation must run at the wider type.
+"""
+function view_offs_type(view::ViewInfo)
+    i64 = IR.Type(Int64)
+    for xs in (view.sizes, view.strides), x in xs
+        x isa IR.Value && IR.type(x) == i64 && return i64
+        x isa Integer && abs(Int(x)) > typemax(Int32) && return i64
+    end
+    return IR.Type(Int32)
+end
+
 "Materialize an env value as an IR.Value of type `ty` (used for constants)."
 function materialize(x, ty)::IR.Value
     x isa IR.Value && return x
@@ -451,6 +476,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
     sh = view.tile_shape
     N = length(sh)
     i32 = IR.Type(Int32)
+    ot = view_offs_type(view)
     et = storage_type(view.elty)
     ptr_t = IR.OpaqueType("tt", "ptr<" * string(et) * ">")
 
@@ -461,17 +487,18 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
         ad = view.order === nothing ? d : view.order[d]
         S = sh[d]
         idx = idxs[d]
-        idx_v = idx isa IR.Value ? as_i32(idx) : const_i32(Int(idx))
-        start = v1(arith.muli(idx_v, const_i32(view_step(view, d)); result=i32))
+        idx_v = idx isa IR.Value ? as_int(idx, ot) : const_int(Int(idx), ot)
+        start = v1(arith.muli(idx_v, const_int(view_step(view, d), ot); result=ot))
         rng = v1(tt.make_range(; result=IR.TensorType([S], i32), start=Int32(0), end_=Int32(S)))
-        offs1 = v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], i32))), rng;
-                              result=IR.TensorType([S], i32)))
-        offs_f = expand_to_full(offs1, sh, d, i32)
+        ot == i32 || (rng = v1(arith.extsi(rng; out=IR.TensorType([S], ot))))
+        offs1 = v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], ot))), rng;
+                              result=IR.TensorType([S], ot)))
+        offs_f = expand_to_full(offs1, sh, d, ot)
         full_t = IR.type(offs_f)
 
         # bounds mask along this dim: offs < size_ad
         size_d = view.sizes[ad]
-        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
+        size_v = size_d isa IR.Value ? as_int(size_d, ot) : const_int(Int(size_d), ot)
         size_f = v1(tt.splat(size_v; result=full_t))
         m = v1(arith.cmpi(offs_f, size_f; predicate=IR.Attribute(Int64(2)), # slt
                           result=IR.TensorType(reverse(sh), IR.Type(Bool))))
@@ -483,7 +510,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
         contrib = if stride_d isa Int && stride_d == 1
             offs_f
         else
-            stride_v = stride_d isa IR.Value ? as_i32(stride_d) : const_i32(Int(stride_d))
+            stride_v = stride_d isa IR.Value ? as_int(stride_d, ot) : const_int(Int(stride_d), ot)
             stride_f = v1(tt.splat(stride_v; result=full_t))
             v1(arith.muli(offs_f, stride_f; result=full_t))
         end
