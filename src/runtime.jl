@@ -125,9 +125,10 @@ layernorm bwd_dwdb 101→59µs and bwd_dx 414→284µs).
 """
 # Triton's pre-Hopper lowering of TMA descriptor loads/stores fails for
 # 16-bit floats (`ConvertTritonGPUToLLVM` → "PassManager::run failed");
-# plain pointer accesses compile fine, so descriptors are skipped whenever
-# a 16-bit float array reaches the kernel (recursively: TileArrays arrive
-# inside structs such as SplitRangeCSRMatrix).
+# plain pointer accesses compile fine, so before sm_90 descriptors are
+# skipped whenever a 16-bit float array reaches the kernel (recursively:
+# TileArrays arrive inside structs such as SplitRangeCSRMatrix). Hopper and
+# later lower them fine, and there they are the fast path.
 function has_16bit_float_array(@nospecialize(T), seen = Base.IdSet{Any}())
     T in seen && return false
     push!(seen, T)
@@ -138,8 +139,10 @@ function has_16bit_float_array(@nospecialize(T), seen = Base.IdSet{Any}())
     end
     return any(FT -> has_16bit_float_array(FT, seen), fieldtypes(T))
 end
-tma_eligible(@nospecialize(argtypes)) =
-    !any(has_16bit_float_array, argtypes isa Type ? argtypes.parameters : argtypes)
+function tma_eligible(@nospecialize(argtypes), target::TargetInfo=_default_target())
+    target.backend == "cuda" && target.arch isa Int && target.arch >= 90 && return true
+    return !any(has_16bit_float_array, argtypes isa Type ? argtypes.parameters : argtypes)
+end
 
 function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   name::String, use_tma::Bool=true)

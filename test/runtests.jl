@@ -165,4 +165,11 @@ for (T, signed) in ((Int32, 1), (UInt32, 0), (Bool, 0))
     check("print isSigned=$signed for $T", occursin("isSigned = array<i32: $signed>", ttir))
 end
 
+# --- TMA for 16-bit floats is only skipped before Hopper --------------------
+let tt16 = Tuple{TA2(Float16), TA2(Float16)}
+    target(sm) = TritonRun.TargetInfo("cuda", sm, 32, "cubin")
+    check("f16 TMA kept on sm_90", TritonRun.tma_eligible(tt16, target(90)))
+    check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
+end
+
 println("ALL $npass TESTS PASSED")
