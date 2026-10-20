@@ -127,9 +127,15 @@ ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order
 view_step(view::ViewInfo, d::Int) = view.step === nothing ? view.tile_shape[d] : view.step[d]
 
 # Number of tile origins along dim d, cld(size, step), as cuTile's native
-# index space counts them; a trailing window may be partial.
-index_space_extent(view::ViewInfo, d::Int, size_v::IR.Value) =
-    v1(arith.ceildivsi(size_v, const_i32(view_step(view, d)); result=IR.Type(Int32)))
+# index space counts them; a trailing window may be partial. The division
+# runs at the size's width (an Int64-indexed dim can exceed 2^31 elements);
+# the count itself is Int32, like cuTile's index space.
+function index_space_extent(view::ViewInfo, d::Int)
+    size_d = view.sizes[d]
+    size_d isa IR.Value || return const_i32(cld(Int(size_d), view_step(view, d)))
+    t = IR.type(size_d)
+    return as_i32(v1(arith.ceildivsi(size_d, const_int(view_step(view, d), t); result=t)))
+end
 
 # Kernel-creation-time switch for the TMA/descriptor lowering (per-view
 # legality still gates it; this is the opt-out).
@@ -148,6 +154,11 @@ tma_eligible(N, tile_shape, pad, contiguous, elty) =
     sizeof(elty) <= 2 &&
     all(s -> 1 <= s <= 256, tile_shape) &&
     tile_shape[1] * sizeof(elty) >= 16
+
+# Descriptor shapes are i32; sizes of an Int64-indexed array may not fit.
+sizes_fit_i32(view::ViewInfo) = all(view.sizes) do s
+    s isa IR.Value ? IR.type(s) == IR.Type(Int32) : typemin(Int32) <= s <= typemax(Int32)
+end
 
 "Emit tt.make_tensor_descriptor for a partition view (mirrors what Python's
 tl.make_tensor_descriptor produces: i32 shape, i64 strides with literal-1
@@ -453,9 +464,7 @@ function delinearize_index(view::ViewInfo, idxs::Vector{Any})
     lin = idxs[1] isa IR.Value ? as_i32(idxs[1]) : const_i32(Int(idxs[1]))
     out = Any[]
     for d in 1:N
-        size_d = view.sizes[d]
-        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
-        nt = index_space_extent(view, d, size_v)
+        nt = index_space_extent(view, d)
         if d < N
             push!(out, v1(arith.remsi(lin, nt; result=i32)))
             lin = v1(arith.divsi(lin, nt; result=i32))
@@ -835,7 +844,8 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         view = ViewInfo(base.ptr, base.sizes, base.strides, base.elty,
                         Int[shape...], pad, base.contiguous, nothing, order)
         N = length(view.tile_shape)
-        if order === nothing && tma_eligible(N, view.tile_shape, pad, view.contiguous, view.elty)
+        if order === nothing && tma_eligible(N, view.tile_shape, pad, view.contiguous, view.elty) &&
+           sizes_fit_i32(view)
             view.desc = emit_descriptor(view)
         end
         return view
@@ -854,16 +864,15 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         N = length(view.tile_shape)
         # descriptors only when the origins stay tile-aligned (plain partition)
         if order === nothing && view.step == view.tile_shape &&
-           tma_eligible(N, view.tile_shape, pad, view.contiguous, view.elty)
+           tma_eligible(N, view.tile_shape, pad, view.contiguous, view.elty) &&
+           sizes_fit_i32(view)
             view.desc = emit_descriptor(view)
         end
         return view
     elseif f === :get_index_space_shape
         view = resolve(cg, args[1])::ViewInfo
         d = Int(resolve(cg, args[2])) + 1   # intrinsic axis is 0-based Julia dim
-        size_d = view.sizes[d]
-        size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
-        return index_space_extent(view, d, size_v)
+        return index_space_extent(view, d)
     elseif f === :load_partition_view || f === :load_strided_view
         view = resolve(cg, args[1])::ViewInfo
         idxs = resolve(cg, args[4])

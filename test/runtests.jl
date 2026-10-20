@@ -207,6 +207,34 @@ let n = Int64(4), off = Int64(2)^33
     check("Int64 induction variable with Int64 operands", all(==(sum(i + off for i in 1:n)), Array(out)))
 end
 
+# ~2 GiB each: skipped when the device cannot hold them
+function try_alloc(T, dims...)
+    try
+        return GPU.zeros(T, dims...)
+    catch err
+        println("  skip: cannot allocate $(Base.format_bytes(sizeof(T) * prod(dims))) ($(typeof(err)))")
+        return nothing
+    end
+end
+
+function count_tiles(out, a)
+    ct.store(out; index=Int32(1), tile=zeros(Int64, (16,)) .+ Int64(ct.num_tiles(a, 1, (1024,))))
+    return
+end
+
+let len = Int64(2)^31 + 8192   # a single dimension beyond Int32: Int64-indexed
+    a = try_alloc(Int8, len)
+    if a !== nothing
+        TAi64 = ct.TileArray{Int8, 1, Int64, Spec1}
+        k = TritonRun.triton_kernel(count_tiles, Tuple{TA1(Int64), TAi64}; name="count_tiles")
+        out = GPU.zeros(Int64, 16)
+        TritonRun.launch!(k, 1, out, a)
+        GPU.synchronize()
+        check("tile count of a dimension beyond 2^31", Array(out)[1] == cld(len, 1024))
+    end
+    a = nothing; GC.gc()
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)
