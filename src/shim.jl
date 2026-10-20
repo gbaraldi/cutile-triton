@@ -217,7 +217,8 @@ end # module TritonShim
     install_shim!()
 
 Route ALL cuTile compilation through the Triton backend by overwriting
-`cuTile.cufunction` (deliberate, opt-in piracy — the whole point of the shim).
+`cuTile.cufunction` and `cuTile.launch` (deliberate, opt-in piracy — the
+whole point of the shim).
 """
 function install_shim!()
     @eval TritonShim.ct function cufunction(@nospecialize(f), tt::Type{<:Tuple}=Tuple{}; kwargs...)
@@ -227,6 +228,15 @@ function install_shim!()
             Base.invokelatest(compile_hook[], f, tt)
         end
         return $(TritonShim).get_kernel(f, tt)
+    end
+    # cuTile's launch defaults `stream=CUDACore.stream()`, which needs a CUDA
+    # driver; shim kernels launch on the backend's current stream regardless.
+    @eval TritonShim.ct function launch(@nospecialize(f), grid, args...;
+                                        dependent::Bool=false, stream=nothing, kwargs...)
+        converted = map(cuTileconvert, args)
+        kernel = cufunction(f, Tuple{map(Core.Typeof, converted)...}; kwargs...)
+        kernel(converted...; blocks=grid, dependent)
+        return nothing
     end
     return nothing
 end
