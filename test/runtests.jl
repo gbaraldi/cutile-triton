@@ -152,4 +152,17 @@ let n = 11   # windows start at 0, 3, 6, 9: only the partial last one covers b[1
     check("strided view windows incl. partial tail", Array(b) == Array(a))
 end
 
+# --- print signedness follows the Julia element type ------------------------
+function print_tile(x)
+    println("v=", ct.load(x; index=Int32(1), shape=(4,)))
+    return
+end
+
+for (T, signed) in ((Int32, 1), (UInt32, 0), (Bool, 0))
+    io = IOBuffer()
+    TritonRun.code_triton(io, print_tile, Tuple{TA1(T)}; name="print_tile")
+    ttir = String(take!(io))
+    check("print isSigned=$signed for $T", occursin("isSigned = array<i32: $signed>", ttir))
+end
+
 println("ALL $npass TESTS PASSED")

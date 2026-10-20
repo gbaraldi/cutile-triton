@@ -921,16 +921,19 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
     elseif f === :print_tko
         # (segments-and-values..., token): string segments become tt.print
         # prefixes; each value gets its own tt.print carrying the preceding text
-        items = Any[resolve(cg, a) for a in args[1:end-1]]   # drop the token
         prefix = ""
-        for it in items
+        for a in args[1:end-1]   # drop the token
+            it = resolve(cg, a)
             if it isa AbstractString
                 prefix *= it
             elseif it isa IR.Value || it isa TF32Val
                 vv = asvalue(it)
                 t = IR.type(vv)
                 et = API.mlirTypeIsARankedTensor(t) ? tensor_elem(t) : t
-                signed = API.mlirTypeIsAInteger(et) ? Int32(1) : Int32(0)
+                # MLIR integers are signless: unsigned and Bool values must not
+                # print sign-extended
+                jt = jl_eltype(cg, a, Nothing)
+                signed = API.mlirTypeIsAInteger(et) && (jt === Nothing || jt <: Signed)
                 tt.print(IR.Value[vv]; prefix=prefix, hex=false, isSigned=Int32[signed])
                 prefix = ""
             else
