@@ -235,6 +235,26 @@ let len = Int64(2)^31 + 8192   # a single dimension beyond Int32: Int64-indexed
     a = nothing; GC.gc()
 end
 
+function last_tile(out, a, j::Int32)
+    ct.store(out; index=(Int32(1), Int32(1)), tile=ct.load(a; index=(Int32(1), j), shape=(16, 64)))
+    return
+end
+
+let ncol = 2^27 + 64   # Int32-indexed, but 16 × ncol = 2^31 + 1024 elements
+    a = try_alloc(Int8, 16, ncol)
+    if a !== nothing
+        fill!(view(a, :, ncol-63:ncol), Int8(7))
+        # pointer path: descriptors address in hardware at 64 bits
+        k = TritonRun.triton_kernel(last_tile, Tuple{TA2(Int8), TA2(Int8), Int32};
+                                    name="last_tile", use_tma=false)
+        out = GPU.zeros(Int8, 16, 64)
+        TritonRun.launch!(k, 1, out, a, Int32(cld(ncol, 64)))
+        GPU.synchronize()
+        check("pointer offsets beyond 2^31 elements (Int32-indexed)", all(==(Int8(7)), Array(out)))
+    end
+    a = nothing; GC.gc()
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)

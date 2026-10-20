@@ -362,11 +362,10 @@ end
 const_int(x::Integer, ty) = ty == IR.Type(Int32) ? const_i32(Int(x)) : const_scalar(Int64(x), ty)
 
 """
-Offset type for a view's pointer arithmetic: i64 when any size/stride is a
-64-bit Value or a constant beyond Int32 (an Int64-indexed TileArray), else
-i32. The flat element offset of a > 2^31-element array overflows i32 even
-when every per-dim size and stride fits in 32 bits, so the whole
-offs*stride accumulation must run at the wider type.
+Offset type for a view's in-tile pointer arithmetic: i64 when any size/stride
+is a 64-bit Value or a constant beyond Int32 (an Int64-indexed TileArray),
+else i32. The tile origin goes into the base pointer at 64 bits (see
+`view_ptrs_mask`), so only the span of one tile has to fit this type.
 """
 function view_offs_type(view::ViewInfo)
     i64 = IR.Type(Int64)
@@ -488,6 +487,13 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
     et = storage_type(view.elty)
     ptr_t = IR.OpaqueType("tt", "ptr<" * string(et) * ">")
 
+    # The tile origin, sum(start_d * stride_d), is folded into the base pointer
+    # as one scalar i64: it is what overflows i32 for arrays beyond 2^31
+    # elements, even when every size and stride fits 32 bits. The per-element
+    # offsets within the tile stay at `ot` (i32 for Int32-indexed arrays), so
+    # the access keeps the canonical splat(base) + i32-offsets form.
+    i64 = IR.Type(Int64)
+    base_off = nothing
     flat_offs = nothing
     mask = nothing
     for d in 1:N
@@ -499,10 +505,9 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
         start = v1(arith.muli(idx_v, const_int(view_step(view, d), ot); result=ot))
         rng = v1(tt.make_range(; result=IR.TensorType([S], i32), start=Int32(0), end_=Int32(S)))
         ot == i32 || (rng = v1(arith.extsi(rng; out=IR.TensorType([S], ot))))
-        offs1 = v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], ot))), rng;
-                              result=IR.TensorType([S], ot)))
-        offs_f = expand_to_full(offs1, sh, d, ot)
-        full_t = IR.type(offs_f)
+        rng_f = expand_to_full(rng, sh, d, ot)
+        full_t = IR.type(rng_f)
+        offs_f = v1(arith.addi(v1(tt.splat(start; result=full_t)), rng_f; result=full_t))
 
         # bounds mask along this dim: offs < size_ad
         size_d = view.sizes[ad]
@@ -512,22 +517,27 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
                           result=IR.TensorType(reverse(sh), IR.Type(Bool))))
         mask = mask === nothing ? m : v1(arith.andi(mask, m; result=IR.type(m)))
 
-        # pointer offset contribution: offs * stride_ad (skip for unit stride
-        # so AxisInfo sees contiguity directly)
+        # pointer: origin term into the scalar base, in-tile offsets * stride_ad
+        # (skip the multiply for unit stride so AxisInfo sees contiguity)
         stride_d = view.strides[ad]
-        contrib = if stride_d isa Int && stride_d == 1
-            offs_f
+        unit = stride_d isa Int && stride_d == 1
+        start64 = v1(arith.muli(as_int(idx_v, i64), const_int(view_step(view, d), i64); result=i64))
+        term = unit ? start64 : v1(arith.muli(start64,
+            stride_d isa IR.Value ? as_int(stride_d, i64) : const_int(Int(stride_d), i64); result=i64))
+        base_off = base_off === nothing ? term : v1(arith.addi(base_off, term; result=i64))
+        contrib = if unit
+            rng_f
         else
             stride_v = stride_d isa IR.Value ? as_int(stride_d, ot) : const_int(Int(stride_d), ot)
-            stride_f = v1(tt.splat(stride_v; result=full_t))
-            v1(arith.muli(offs_f, stride_f; result=full_t))
+            v1(arith.muli(rng_f, v1(tt.splat(stride_v; result=full_t)); result=full_t))
         end
         flat_offs = flat_offs === nothing ? contrib :
                     v1(arith.addi(flat_offs, contrib; result=full_t))
     end
 
+    base = v1(tt.addptr(view.ptr, base_off; result=ptr_t))
     ptrs_t = IR.TensorType(reverse(sh), ptr_t)
-    ptrs0 = v1(tt.splat(view.ptr; result=ptrs_t))
+    ptrs0 = v1(tt.splat(base; result=ptrs_t))
     ptrs = v1(tt.addptr(ptrs0, flat_offs; result=ptrs_t))
     return ptrs, mask
 end
