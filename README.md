@@ -36,6 +36,11 @@ Triton exists.
   compile-time-constant unit strides (→ `LDG.E.128` vectorization).
 - **TMA**: eligible `PartitionView`s lower to 2–5-D tensor descriptors;
   NegInf padding is recovered via `select(mask, tma_load, -inf)`.
+- **Index width**: loops run at the range's integer width, and each tile's
+  origin is added to the base pointer at 64 bits, so arrays beyond 2³¹
+  elements address correctly while in-tile offsets stay i32. Remaining limit:
+  an Int32-indexed view whose span within one tile reaches 2³¹ elements
+  (a stride of ~8.4M with 256-wide tiles along that dim).
 
 ## Layout
 
@@ -44,7 +49,7 @@ Triton exists.
 | `src/TileTriton.jl` | package module: `triton_kernel`/`launch!`, `code_triton` reflection, `install_shim!`, `set_target!`/`use_rocm!` |
 | `src/emitter.jl` | `TritonEmitter`: StructuredIRCode → TTIR walker (~1,900 lines, the core) |
 | `src/runtime.jl` | `TritonRun`: in-process compile (PythonCall) + launcher, vendor-parameterized target |
-| `src/shim.jl` | `TritonShim` + `install_shim!()`: overwrite `cuTile.cufunction` so unmodified cuTile code runs here (opt-in) |
+| `src/shim.jl` | `TritonShim` + `install_shim!()`: overwrite `cuTile.cufunction` and `cuTile.launch` so unmodified cuTile code runs here (opt-in) |
 | `src/dialects/Triton.jl` | generated `tt` dialect builders (from Reactant.jl, tblgen'd from Triton's `.td`) |
 | `ext/TileTritonAMDGPUExt.jl` | ROCm target (validated on MI300A, see below) |
 | `test/runtests.jl` | standalone correctness suite |
@@ -76,18 +81,20 @@ k = TritonRun.triton_kernel(my_cutile_kernel, argtypes; name="k")
 TritonRun.launch!(k, grid, rocarrays...)
 ```
 
-Validated on an MI300A, identically under ROCm 6.4.2 and 7.2.4:
+Validated on an MI300A (ROCm 7.2.4, cuTile 1.0.0; earlier rounds also under
+ROCm 6.4.2):
 
-- standalone suite 10/10 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
+- standalone suite 23/23 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
   test/runtests.jl`), including the tf32 matmuls — CDNA3's XF32 MFMA
-  absorbs `inputPrecision=tf32` at tf32-like accuracy;
-- **cuTile's own device suite: 1,671 pass / 5 fail / 52 error** through the
-  shim. Every backend-relevant file matches CUDA exactly (atomics,
-  broadcast, control_flow, math, reductions, tile, ...); the delta vs the
-  CUDA run is entirely tests that require CUDA-the-package (random.jl
-  compares against cuTile's host-side RNG reference, which allocates a
-  `CuArray` internally; two `@cuda`-driver hint tests; one test spawning a
-  CUDA subprocess);
+  absorbs `inputPrecision=tf32` at tf32-like accuracy — and the >2³¹-element
+  addressing tests;
+- **cuTile's own device suite: 1,703 pass / 4 fail / 66 error** through the
+  shim. Every backend-relevant file matches the CUDA run exactly (atomics,
+  broadcast, control_flow, math, reductions, slice, tile, views, ...); the
+  delta is tests that require CUDA-the-package (random.jl compares against
+  cuTile's host-side RNG reference, which allocates a `CuArray`; core.jl stops
+  at `@device_code_sass`; int64_indexing.jl and pdl.jl call `@cuda`; two
+  hint tests query `CUDA.device()`);
 - head-to-head vs native AMDGPU.jl on the same workloads
   (`bench/rocm_compare.jl`, ROCm 7.2.4, untuned single tile shape):
 
@@ -117,6 +124,9 @@ NVIDIA-only so `use_rocm!()` runs pointer loads everywhere.
 buffer-atomics lowering emits the nonexistent LLVM intrinsic
 `...raw.ptr.buffer.atomic.exch` (the real one is `*.swap`), killing every
 `atomic_xchg` at compile — worth an upstream issue.
+The AMD backend also leaves tensor `arith.floordivsi`/`ceildivsi`/
+`ceildivui` unlowered (NVIDIA lowers them), so the emitter expands those to a
+truncating divide plus a correction.
 
 ## Notes
 
