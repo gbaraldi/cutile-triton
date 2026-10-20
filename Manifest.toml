@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "7c16c6d7ceea9a56cced07a8c7744bfb97edf2e2"
+project_hash = "c11d4f0c8d6412e68e729abaccbee3dd39f53ffe"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -725,7 +725,7 @@ uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 version = "1.11.0"
 
 [[deps.TileTriton]]
-deps = ["CUDA", "CondaPkg", "FFTW", "IRStructurizer", "MLIR", "MLIR_jll", "NVTX", "PythonCall", "cuTile"]
+deps = ["CUDA", "CondaPkg", "FFTW", "IRStructurizer", "MLIR", "MLIR_jll", "NVTX", "PythonCall", "SIMD", "cuTile"]
 path = "."
 uuid = "41c06a59-6785-47c7-9807-2e34c1576fec"
 version = "0.1.0"
