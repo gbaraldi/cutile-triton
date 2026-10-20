@@ -1673,12 +1673,15 @@ function emit_if!(cg::CG, op::IfOp, @nospecialize(typ))
 end
 
 function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
-    i32 = IR.Type(Int32)
-    # The iv block arg is i32 below, so i64 bounds (a Julia `Int` range) are
-    # truncated to match — scf.for requires all three the same type.
-    lb = let r = resolve(cg, op.lower); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
-    ub = let r = resolve(cg, op.upper); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
-    st = let r = resolve(cg, op.step); r isa IR.Value ? as_i32(r) : const_i32(Int(r)) end
+    # The induction variable has the range's Julia type, as in the native
+    # backend: an Int64 range is an i64 loop. scf.for needs all three bounds
+    # of that type.
+    iv_jt = widenconst(op.iv_arg.type)
+    iv_t = iv_jt <: Integer && sizeof(iv_jt) == 8 ? IR.Type(Int64) : IR.Type(Int32)
+    bound(x) = let r = resolve(cg, x)
+        r isa IR.Value ? as_int(r, iv_t) : const_int(Int(r), iv_t)
+    end
+    lb = bound(op.lower); ub = bound(op.upper); st = bound(op.step)
 
     # Tokens (dropped in this backend) may be loop-carried; filter them out
     # of the scf carries by their inferred types (as emit_if! does for branch
@@ -1690,7 +1693,7 @@ function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
                      for (a, x) in zip(carry_args[keep], op.init_values[keep])]
     init_types = IR.Type[IR.type(v) for v in inits]
 
-    barg_types = IR.Type[i32; init_types...]
+    barg_types = IR.Type[iv_t; init_types...]
     barg_ids = Int[op.iv_arg.id; [a.id for a in carry_args[keep]]...]
     for (j, a) in enumerate(carry_args)
         keep[j] || (cg.blockargs[a.id] = nothing)

@@ -172,6 +172,41 @@ let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
 end
 
+# --- 64-bit integers: loop bounds, mixed widths, extents beyond 2^31 --------
+function loop64(out, lo::Int64, hi::Int64)
+    acc = zeros(Int64, (16,))
+    for i in lo:hi
+        acc = acc .+ i
+    end
+    ct.store(out; index=Int32(1), tile=acc)
+    return
+end
+
+let lo = Int64(2)^32 + 5, hi = lo + 3
+    k = TritonRun.triton_kernel(loop64, Tuple{TA1(Int64), Int64, Int64}; name="loop64")
+    out = GPU.zeros(Int64, 16)
+    TritonRun.launch!(k, 1, out, lo, hi)
+    GPU.synchronize()
+    check("Int64 loop bounds beyond 2^31", all(==(sum(lo:hi)), Array(out)))
+end
+
+function loop_offset(out, n::Int64, off::Int64)
+    acc = zeros(Int64, (16,))
+    for i in 1:n
+        acc = acc .+ (i + off)
+    end
+    ct.store(out; index=Int32(1), tile=acc)
+    return
+end
+
+let n = Int64(4), off = Int64(2)^33
+    k = TritonRun.triton_kernel(loop_offset, Tuple{TA1(Int64), Int64, Int64}; name="loop_offset")
+    out = GPU.zeros(Int64, 16)
+    TritonRun.launch!(k, 1, out, n, off)
+    GPU.synchronize()
+    check("Int64 induction variable with Int64 operands", all(==(sum(i + off for i in 1:n)), Array(out)))
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)
