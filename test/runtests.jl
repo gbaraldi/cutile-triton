@@ -172,4 +172,21 @@ let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
 end
 
+# --- candidate racing applies a read-modify-write kernel exactly once -------
+function accumulate!(acc, x, tile::Int)
+    bid = ct.bid(1)
+    a = ct.load(acc; index=bid, shape=(tile,))
+    ct.store(acc; index=bid, tile=a + ct.load(x; index=bid, shape=(tile,)))
+    return
+end
+
+TileTriton.install_shim!()
+let n = 4096, tile = 256
+    acc = GPU.ones(Float32, n)
+    x = GPU.ones(Float32, n)
+    ct.launch(accumulate!, cld(n, tile), acc, x, ct.Constant(tile))   # races candidates
+    GPU.synchronize()
+    check("racing restores arguments (one application)", all(==(2f0), Array(acc)))
+end
+
 println("ALL $npass TESTS PASSED")

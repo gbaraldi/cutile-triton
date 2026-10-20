@@ -5,7 +5,8 @@ module TileTritonAMDGPUExt
 
 using AMDGPU
 using TileTriton
-using TileTriton.TritonRun: TritonRun, set_target!, _load_module, _raw_launch, _sync
+using TileTriton.TritonRun: TritonRun, set_target!, _load_module, _raw_launch, _sync,
+                            _dev_alloc, _dev_copy
 import cuTile
 
 # cuTile's generic TileArray(arr) refuses plain-`Ptr` arrays as a host-memory
@@ -30,6 +31,8 @@ function TileTriton.use_rocm!()
     _load_module[] = _hip_load
     _raw_launch[] = _hip_launch
     _sync[] = AMDGPU.synchronize
+    _dev_alloc[] = _hip_alloc
+    _dev_copy[] = _hip_copy
     # triton 3.7.1's buffer-atomics lowering emits the nonexistent LLVM
     # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
     # kills every atomic_xchg at compile. Buffer loads/stores stay on.
@@ -42,6 +45,15 @@ function _hip_check(status)
     status == AMDGPU.HIP.hipSuccess ||
         error("HIP error: $(unsafe_string(AMDGPU.HIP.hipGetErrorString(status)))")
 end
+
+# device scratch and device-to-device copies on the launch stream, for the
+# shim's argument snapshots
+function _hip_alloc(nbytes)
+    buf = ROCArray{UInt8}(undef, nbytes)
+    return buf, UInt(pointer(buf))
+end
+_hip_copy(dst, src, nbytes) = _hip_check(AMDGPU.HIP.hipMemcpyDtoDAsync(
+    Ptr{Cvoid}(dst), Ptr{Cvoid}(src), nbytes, AMDGPU.stream().stream))
 
 function _hip_load(bin::Vector{UInt8}, name::String, shared::Int)
     mod = Ref{AMDGPU.HIP.hipModule_t}()

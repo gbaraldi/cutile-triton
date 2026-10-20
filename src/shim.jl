@@ -93,7 +93,7 @@ _device_sync() =
 const SNAPSHOT_LIMIT = 2 << 30  # fall back to no racing beyond 2 GiB
 
 function _arg_regions(args)
-    regions = Tuple{CuPtr{UInt8}, Int}[]
+    regions = Tuple{UInt, Int}[]
     for a in args
         _arg_regions!(regions, a)
     end
@@ -103,14 +103,16 @@ end
 function _arg_regions!(regions, @nospecialize(x))
     T = typeof(x)
     if x isa ct.TileArray
-        # strided extent in elements (holes included; restoring them is harmless)
-        nelem = 1
+        # strided extent in elements (holes included; restoring them is
+        # harmless); a negative stride extends the region below the pointer
+        lo = hi = 0
         for (sz, st) in zip(x.sizes, x.strides)
-            sz == 0 && (nelem = 0; break)
-            nelem += (Int(sz) - 1) * abs(Int(st))
+            sz == 0 && return regions
+            span = (Int(sz) - 1) * Int(st)
+            span < 0 ? (lo += span) : (hi += span)
         end
-        nelem > 0 &&
-            push!(regions, (CuPtr{UInt8}(UInt(x.ptr)), nelem * sizeof(eltype(x))))
+        esz = sizeof(eltype(x))
+        push!(regions, (UInt(x.ptr) + lo * esz, (hi - lo + 1) * esz))
     elseif !Base.issingletontype(T) && !isprimitivetype(T)
         for i in 1:fieldcount(T)
             _arg_regions!(regions, getfield(x, i))
@@ -120,18 +122,18 @@ function _arg_regions!(regions, @nospecialize(x))
 end
 
 function _snapshot(regions)
-    snaps = Vector{CuArray{UInt8,1}}(undef, length(regions))
-    for (i, (ptr, n)) in enumerate(regions)
-        buf = CuArray{UInt8}(undef, n)
-        unsafe_copyto!(pointer(buf), ptr, n)
-        snaps[i] = buf
+    snaps = Vector{Any}(undef, length(regions))
+    for (i, (addr, n)) in enumerate(regions)
+        owner, buf = TritonRun.dev_alloc(n)
+        TritonRun.dev_copy(buf, addr, n)
+        snaps[i] = (owner, buf)
     end
     return snaps
 end
 
 function _restore!(regions, snaps)
-    for (i, (ptr, n)) in enumerate(regions)
-        unsafe_copyto!(ptr, pointer(snaps[i]), n)
+    for (i, (addr, n)) in enumerate(regions)
+        TritonRun.dev_copy(addr, snaps[i][2], n)
     end
     return nothing
 end
@@ -180,9 +182,9 @@ function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwarg
         # specialization. Argument memory is snapshotted and restored around
         # every launch so rerunning is safe even for kernels that
         # read-modify-write their arguments (accumulation, locks, atomics).
-        regions = cuda ? _arg_regions(args) : Tuple{CuPtr{UInt8}, Int}[]
+        regions = _arg_regions(args)
         total = sum(last, regions; init=0)
-        if !cuda || total > SNAPSHOT_LIMIT
+        if total > SNAPSHOT_LIMIT
             # cannot restore: don't rerun, fall back to the first candidate
             # (candidate order puts the heuristic default first)
             k.chosen = 1

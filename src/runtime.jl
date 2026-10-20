@@ -38,6 +38,17 @@ end
 const _load_module = Ref{Any}(nothing)   # (bin::Vector{UInt8}, name, shared) -> (mod, fun)
 const _raw_launch = Ref{Any}(nothing)    # (fun, types, vals; threads, blocks, shmem)
 const _sync = Ref{Any}(nothing)          # () -> device synchronize
+const _dev_alloc = Ref{Any}(nothing)     # (nbytes) -> (owner, addr::UInt) device scratch
+const _dev_copy = Ref{Any}(nothing)      # (dst::UInt, src::UInt, nbytes) -> nothing, on the launch stream
+
+function _cuda_alloc(nbytes)
+    buf = CuArray{UInt8}(undef, nbytes)
+    return buf, UInt(pointer(buf))
+end
+_cuda_copy(dst, src, nbytes) = unsafe_copyto!(CuPtr{UInt8}(dst), CuPtr{UInt8}(src), nbytes)
+
+dev_alloc(nbytes) = (_dev_alloc[] === nothing ? _cuda_alloc : _dev_alloc[])(nbytes)
+dev_copy(dst, src, nbytes) = (_dev_copy[] === nothing ? _cuda_copy : _dev_copy[])(dst, src, nbytes)
 
 function _cuda_load(bin, name, shared)
     mod = CuModule(bin)
