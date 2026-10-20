@@ -172,6 +172,26 @@ let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
 end
 
+# --- floor/ceil division of integer tiles -----------------------------------
+function round_div(qf, qc, x, d)
+    a = ct.load(x; index=Int32(1), shape=(64,))
+    b = ct.load(d; index=Int32(1), shape=(64,))
+    ct.store(qf; index=Int32(1), tile=fld.(a, b))
+    ct.store(qc; index=Int32(1), tile=cld.(a, b))
+    return
+end
+
+for T in (Int32, UInt32)
+    # every sign combination, exact and inexact quotients
+    xs = T <: Signed ? T.(repeat(-8:7, 4)) : T.(repeat(0:15, 4) .* 5)
+    ds = T <: Signed ? T.(repeat([-3, -2, 2, 3], inner=16)) : T.(repeat([1, 2, 3, 7], inner=16))
+    k = TritonRun.triton_kernel(round_div, Tuple{TA1(T), TA1(T), TA1(T), TA1(T)}; name="round_div")
+    qf = GPU.zeros(T, 64); qc = GPU.zeros(T, 64)
+    TritonRun.launch!(k, 1, qf, qc, copyto!(GPU.zeros(T, 64), xs), copyto!(GPU.zeros(T, 64), ds))
+    GPU.synchronize()
+    check("fld/cld of $T tiles", Array(qf) == fld.(xs, ds) && Array(qc) == cld.(xs, ds))
+end
+
 # --- 64-bit integers: loop bounds, mixed widths, extents beyond 2^31 --------
 function loop64(out, lo::Int64, hi::Int64)
     acc = zeros(Int64, (16,))

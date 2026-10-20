@@ -1087,16 +1087,10 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         a = resolve(cg, args[1]); b = resolve(cg, args[2])
         av, bv = _pair_values(a, b)
         return v1(arith.divsi(av, bv; result=IR.type(av)))
-    elseif f === :cldi
+    elseif f === :cldi || f === :fldi
         a = resolve(cg, args[1]); b = resolve(cg, args[2])
         av, bv = _pair_values(a, b)
-        op2 = Symbol(resolve(cg, args[3])) === :Signed ? arith.ceildivsi : arith.ceildivui
-        return v1(op2(av, bv; result=IR.type(av)))
-    elseif f === :fldi
-        a = resolve(cg, args[1]); b = resolve(cg, args[2])
-        av, bv = _pair_values(a, b)
-        op2 = Symbol(resolve(cg, args[3])) === :Signed ? arith.floordivsi : arith.divui
-        return v1(op2(av, bv; result=IR.type(av)))
+        return rounded_div(av, bv; ceil=f === :cldi, signed=Symbol(resolve(cg, args[3])) === :Signed)
     elseif f === :mulhii
         a = resolve(cg, args[1]); b = resolve(cg, args[2])
         av, bv = _pair_values(a, b)
@@ -1493,6 +1487,33 @@ function _pair_values(a, b)
         bv = materialize(b, IR.type(av))
         return av, bv
     end
+end
+
+# Floor/ceil division. The AMD backend leaves arith.floordivsi/ceildivsi/
+# ceildivui on tensors unlowered, so tensors get a truncating divide plus a
+# ±1 correction where the remainder is nonzero.
+function rounded_div(av::IR.Value, bv::IR.Value; ceil::Bool, signed::Bool)
+    t = IR.type(av)
+    if !is_tensor(av)
+        op = ceil ? (signed ? arith.ceildivsi : arith.ceildivui) :
+                    (signed ? arith.floordivsi : arith.divui)
+        return v1(op(av, bv; result=t))
+    end
+    q = v1((signed ? arith.divsi : arith.divui)(av, bv; result=t))
+    !signed && !ceil && return q
+    bt = IR.TensorType(tensor_shape(av), IR.Type(Bool))
+    cmp(x, y, pred) = v1(arith.cmpi(x, y; predicate=IR.Attribute(Int64(pred)), result=bt))
+    r = v1((signed ? arith.remsi : arith.remui)(av, bv; result=t))
+    zero = materialize(0, t)
+    adj = cmp(r, zero, 1)                                     # ne
+    if signed
+        # truncation rounded toward zero: off by one when the exact quotient
+        # is negative (floor) or positive (ceil); r has the sign of a
+        off = cmp(cmp(r, zero, 2), cmp(bv, zero, 2), ceil ? 0 : 1)   # slt, then eq / ne
+        adj = v1(arith.andi(adj, off; result=bt))
+    end
+    q1 = v1((ceil ? arith.addi : arith.subi)(q, materialize(1, t); result=t))
+    return v1(arith.select(adj, q1, q; result=t))
 end
 
 # ----------------------------------------------------------------------------
