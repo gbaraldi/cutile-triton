@@ -14,18 +14,24 @@ Julia kernel  →  cuTile front end (code_structured, unchanged)
 Kernels are written in the plain cuTile language; nothing kernel-side knows
 Triton exists.
 
-## State (August 2026, H100 NVL, triton 3.7.1, cuTile 0.3.2)
+## State (October 2026, H100 NVL, triton 3.7.1, cuTile 1.0.0)
 
-- **Coverage**: 1,810 / 1,820 of cuTile 0.3.2's own device test suite passes
-  through this backend (the tail: masked `atomic_cas` has no `tt` equivalent,
-  one decrementing-StepRange `LoopOp`, one triton-internal crash, and tests
-  asserting native-implementation specifics).
-- **Performance** vs native tileiras on the cuTile example suite: 8 of 11
+- **Coverage**: cuTile 1.0.0's own device test suite runs at 1,874 pass /
+  3 fail / 18 error through this backend. The errors are features not lowered
+  yet: gather/scatter views (7), atomic reductions through views (6), masked
+  `atomic_cas` (3, no `tt` equivalent), a decrementing-StepRange `LoopOp`, and
+  a zero-step slice; the 3 failures expect native-compiler error messages.
+- **Performance** (August 2026, cuTile 0.3.2) vs native tileiras on the cuTile
+  example suite: 8 of 11
   workloads at or above native (fft 3.6×, layernorm-fwd 2.06×, softmax 1.63×);
   tensor-core-scheduling-heavy kernels behind (fmha 0.80×, moe 0.55×,
   batchmatmul 0.50× — tileiras' automatic warp specialization).
-- **Autotuning**: dot-kernels race {TMA, pointer}×{arg hints}×{4, 8 warps}
-  once per specialization, mirroring `@triton.autotune`.
+- **Autotuning**: every kernel races 4- and 8-warp builds once per
+  specialization, mirroring `@triton.autotune`; dot kernels additionally race
+  {TMA, pointer}×{arg hints}. Argument memory is snapshotted and restored
+  around the race, so read-modify-write kernels (accumulation, atomics) see
+  exactly one application. Pipeline stages drop until a kernel fits the
+  device's shared memory.
 - **Hints**: `ArraySpec` maps to `tt.divisibility` argument attributes +
   compile-time-constant unit strides (→ `LDG.E.128` vectorization).
 - **TMA**: eligible `PartitionView`s lower to 2–5-D tensor descriptors;
@@ -117,9 +123,11 @@ buffer-atomics lowering emits the nonexistent LLVM intrinsic
 - `Triton.jl` is generated code (mlir-jl-tblgen over Triton's tablegen
   definitions, via Reactant.jl's build); Triton is MIT-licensed, Reactant.jl
   MIT.
-- `TritonEmitter.jl` carries a method overwrite fixing a cuTile 0.3.2
-  front-end bug (`promote_scalar_type` vs `Union` types on Julia 1.12) —
-  candidate upstream PR.
+- `TritonEmitter.jl` carries two cuTile workarounds, both candidate upstream
+  PRs: a method overwrite for a front-end bug (`promote_scalar_type` vs `Union`
+  types on Julia 1.12, still present in 1.0.0), and a demotion of the
+  optimizer's one in-place rewrite rule, which corrupts index tiles shared by
+  a mask comparison and a gather.
 - Known upstream findings worth filing: `tt.dot` int8 with K<32 silently
   miscompiles (2×) via `IRSource`; tf32 descriptor matmuls are slow on
   sm_90 (no upstream tutorial even exercises them).
