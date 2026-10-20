@@ -126,6 +126,11 @@ ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order
     ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order, tile_shape)
 view_step(view::ViewInfo, d::Int) = view.step === nothing ? view.tile_shape[d] : view.step[d]
 
+# Number of tile origins along dim d, cld(size, step), as cuTile's native
+# index space counts them; a trailing window may be partial.
+index_space_extent(view::ViewInfo, d::Int, size_v::IR.Value) =
+    v1(arith.ceildivsi(size_v, const_i32(view_step(view, d)); result=IR.Type(Int32)))
+
 # Kernel-creation-time switch for the TMA/descriptor lowering (per-view
 # legality still gates it; this is the opt-out).
 const USE_TMA = Ref(true)
@@ -450,13 +455,7 @@ function delinearize_index(view::ViewInfo, idxs::Vector{Any})
     for d in 1:N
         size_d = view.sizes[d]
         size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
-        nt = if view_step(view, d) == view.tile_shape[d]
-            v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
-        else
-            rem_v = v1(arith.subi(size_v, const_i32(view.tile_shape[d]); result=i32))
-            v1(arith.addi(v1(arith.floordivsi(rem_v, const_i32(view_step(view, d)); result=i32)),
-                          const_i32(1); result=i32))
-        end
+        nt = index_space_extent(view, d, size_v)
         if d < N
             push!(out, v1(arith.remsi(lin, nt; result=i32)))
             lin = v1(arith.divsi(lin, nt; result=i32))
@@ -864,12 +863,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         d = Int(resolve(cg, args[2])) + 1   # intrinsic axis is 0-based Julia dim
         size_d = view.sizes[d]
         size_v = size_d isa IR.Value ? as_i32(size_d) : const_i32(Int(size_d))
-        i32 = IR.Type(Int32)
-        view_step(view, d) == view.tile_shape[d] &&
-            return v1(arith.ceildivsi(size_v, const_i32(view.tile_shape[d]); result=i32))
-        rem_v = v1(arith.subi(size_v, const_i32(view.tile_shape[d]); result=i32))
-        return v1(arith.addi(v1(arith.floordivsi(rem_v, const_i32(view_step(view, d)); result=i32)),
-                             const_i32(1); result=i32))
+        return index_space_extent(view, d, size_v)
     elseif f === :load_partition_view || f === :load_strided_view
         view = resolve(cg, args[1])::ViewInfo
         idxs = resolve(cg, args[4])

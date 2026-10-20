@@ -132,4 +132,24 @@ let n = 1000, m = 2048, tile = 1024   # n < tile → masked + NegInf-padded
     check("softmax $n x $m (persistent, tile=$tile)", Array(y) ≈ ref)
 end
 
+# --- strided views: cld(size, step) windows, the last one partial -----------
+function copy_windows(a, b)
+    src = ct.eachtile(a, (4,); step=(3,), padding_mode=ct.PaddingMode.Zero)
+    dst = ct.eachtile(b, (4,); step=(3,))
+    for i in 1:size(src, 1)
+        dst[i] = src[i]
+    end
+    return
+end
+
+let n = 11   # windows start at 0, 3, 6, 9: only the partial last one covers b[11]
+    k = TritonRun.triton_kernel(copy_windows, Tuple{TA1(Float32), TA1(Float32)};
+                                name="copy_windows")
+    a = copyto!(GPU.zeros(Float32, n), Float32.(1:n))
+    b = GPU.zeros(Float32, n)
+    TritonRun.launch!(k, 1, a, b)
+    GPU.synchronize()
+    check("strided view windows incl. partial tail", Array(b) == Array(a))
+end
+
 println("ALL $npass TESTS PASSED")
