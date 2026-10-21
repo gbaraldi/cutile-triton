@@ -16,11 +16,13 @@ Triton exists.
 
 ## State (October 2026, H100 NVL, triton 3.7.1, cuTile 1.0.0)
 
-- **Coverage**: cuTile 1.0.0's own device test suite runs at 1,874 pass /
-  3 fail / 18 error through this backend. The errors are features not lowered
-  yet: gather/scatter views (7), atomic reductions through views (6), masked
-  `atomic_cas` (3, no `tt` equivalent), a decrementing-StepRange `LoopOp`, and
-  a zero-step slice; the 3 failures expect native-compiler error messages.
+- **Coverage**: cuTile 1.0.0's own device test suite passes in full through
+  this backend: 1,916 pass / 0 fail / 0 error, including gather/scatter
+  views, atomic reductions through views, masked `atomic_cas` (emulated:
+  `tt.atomic_cas` has no mask), general loops (`LoopOp`) and runtime throws.
+  Launch hints are honored: `num_worker_warps` sets the warp count,
+  `occupancy` a register (NVIDIA) or waves-per-EU (AMD) budget, and
+  `num_ctas > 1` is rejected without thread-block clusters, as natively.
 - **Performance** (August 2026, cuTile 0.3.2) vs native tileiras on the cuTile
   example suite: 8 of 11
   workloads at or above native (fft 3.6×, layernorm-fwd 2.06×, softmax 1.63×);
