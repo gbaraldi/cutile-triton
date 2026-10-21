@@ -355,7 +355,8 @@ end
                 num_warps=4, num_stages=backend default, use_tma=true)
 
 Reflection for the Triton backend, mirroring cuTile's `@device_code_*` family.
-`stage` is one of `:ttir` (as emitted), `:ttgir`, `:llir`, `:ptx`, `:sass`.
+`stage` is one of `:ttir` (as emitted), `:ttgir`, `:llir`, then `:ptx` and
+`:sass` on NVIDIA or `:amdgcn` on AMD.
 """
 function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      stage::Symbol=:ttir, name::String="kernel",
@@ -372,10 +373,10 @@ function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
         write(cubin_path, pyconvert(Vector{UInt8}, k.asm["cubin"]))
         nvdisasm = joinpath(_triton_dir[], "backends", "nvidia", "bin", "nvdisasm")
         print(io, read(`$nvdisasm -c $cubin_path`, String))
-    elseif stage in (:ttgir, :llir, :ptx)
+    elseif stage in (:ttgir, :llir, :ptx, :amdgcn)
         print(io, pyconvert(String, k.asm[String(stage)]))
     else
-        error("code_triton: unknown stage :$stage (use :ttir/:ttgir/:llir/:ptx/:sass)")
+        error("code_triton: unknown stage :$stage (use :ttir/:ttgir/:llir/:ptx/:sass/:amdgcn)")
     end
     return nothing
 end

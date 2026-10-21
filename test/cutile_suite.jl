@@ -14,6 +14,7 @@ const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
     # use is tiny — forward it to AMDGPU
     @eval module CUDACompat
         using AMDGPU
+        import cuTile, TileTriton
         const CuArray = AMDGPU.ROCArray
         zeros(args...) = AMDGPU.zeros(args...)
         rand(args...)  = AMDGPU.rand(args...)
@@ -22,6 +23,23 @@ const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
         fill(args...)  = AMDGPU.fill(args...)
         synchronize(args...) = AMDGPU.synchronize(args...)
         const var"@allowscalar" = AMDGPU.var"@allowscalar"
+        device() = AMDGPU.device()
+        # the suite's capability checks gate NVIDIA features (thread-block
+        # clusters, PDL, bf16 atomics): answer like the H100 the CUDA run
+        # uses, so both runs take the same branches
+        capability(::Any) = v"9.0"
+        # device assembly of the kernels `ex` compiles: AMDGCN, SASS's counterpart
+        macro device_code_sass(ex)
+            quote
+                cuTile.compile_hook[] = (f, tt) ->
+                    TileTriton.TritonRun.code_triton(stdout, f, tt; stage=:amdgcn)
+                try
+                    $(esc(ex))
+                finally
+                    cuTile.compile_hook[] = nothing
+                end
+            end
+        end
     end
     TileTriton.use_rocm!()
 else
@@ -67,8 +85,12 @@ try
                         m = Module(Symbol("Test_", replace(file, "." => "_")))
                         if BACKEND == "rocm"
                             Core.eval(m, :(using Test, cuTile))
+                            # @cuda backend=cuTile goes through the shim
+                            Core.eval(m, :(using CUDA: @cuda))
                             Core.eval(m, :(const CUDA = $CUDACompat))
                             Core.eval(m, :(const CuArray = $(CUDACompat.CuArray)))
+                            Core.eval(m, :(const device = $(CUDACompat.device)))
+                            Core.eval(m, :(const capability = $(CUDACompat.capability)))
                         else
                             Core.eval(m, :(using Test, CUDA, cuTile))
                         end
