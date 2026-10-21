@@ -793,9 +793,11 @@ function walk_stmt!(cg::CG, @nospecialize(stmt), @nospecialize(typ))
     stmt isa ct.MakeTokenNode && return nothing
     stmt isa ReturnNode && return nothing
     if nameof(typeof(stmt)) === :ThrowNode
-        # cuTile front end marks calls with no Tile IR equivalent; surface the
-        # same message at compile time.
-        error(stmt.message)
+        # a throw the program can reach at runtime fails an assertion, as in
+        # the native backend; an unavoidable one is a compile-time error
+        stmt.runtime || error(stmt.message)
+        tt.assert(assert_once(materialize(false, IR.Type(Bool))); message=IR.Attribute(stmt.message))
+        return nothing
     end
     stmt isa LoopOp &&
         error("walk_stmt!: LoopOp not yet supported by the Triton emitter")
