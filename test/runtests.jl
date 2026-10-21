@@ -322,6 +322,25 @@ let len = Int(typemax(Int32))
     buf = nothing; GC.gc()
 end
 
+# --- masked atomic_cas: out-of-bounds lanes, and no active lane at all -------
+function cas_masked(arr, out, lim::Int64)
+    indices = ct.arange(16; dtype=Int)
+    old = ct.atomic_cas(arr, indices, 0, 1; mask=indices .<= ct.Tile(lim))
+    ct.scatter(out, indices, old)
+    return
+end
+
+let k = TritonRun.triton_kernel(cas_masked, Tuple{TA1(Int), TA1(Int), Int64}; name="cas_masked")
+    arr = GPU.zeros(Int, 8); out = GPU.fill(-1, 8)      # lanes 9:16 out of bounds
+    TritonRun.launch!(k, 1, arr, out, Int64(16))
+    GPU.synchronize()
+    check("masked atomic_cas with out-of-bounds lanes", all(==(1), Array(arr)) && all(==(0), Array(out)))
+    arr = GPU.fill(5, 8)                                # every lane masked out
+    TritonRun.launch!(k, 1, arr, out, Int64(0))
+    GPU.synchronize()
+    check("masked atomic_cas with no active lane", all(==(5), Array(arr)))
+end
+
 # --- launch hints ------------------------------------------------------------
 let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     k = TritonRun.triton_kernel(vadd, tt; name="vadd", hints=(; num_worker_warps=8))

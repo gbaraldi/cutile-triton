@@ -744,6 +744,20 @@ end
 
 _not(c::IR.Value) = v1(arith.xori(c, materialize(true, IR.Type(Bool)); result=IR.Type(Bool)))
 
+"A region whose body returns the values it yields."
+function yield_region(body::Function)
+    region = IR.Region()
+    b = IR.Block(IR.Type[], IR.Location[])
+    push!(region, b)
+    IR.activate(b)
+    try
+        scf.yield(IR.Value[body()...])
+    finally
+        IR.deactivate(b)
+    end
+    return region
+end
+
 """
 Early `return` inside an `if` at kernel top level: scf has no early exit, so
 predicate instead. The returning side's statements run under its condition;
@@ -1298,14 +1312,15 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         # (ptr_tile, expected, desired, mask, memory_order, memory_scope[, token])
         cg.has_atomic = true
         mask = resolve(cg, args[4])
-        mask isa IR.Value &&
-            error("atomic_cas: masked CAS has no tt.atomic_cas equivalent yet")
         ptrs = asvalue(resolve(cg, args[1]))
-        cmp = materialize(resolve(cg, args[2]), tile_type(typ))
-        val = materialize(resolve(cg, args[3]), tile_type(typ))
-        return v1(tt.atomic_cas(ptrs, cmp, val; result=tile_type(typ),
-                                sem=IR.Attribute(Int32(mem_sem(resolve(cg, args[5])))),
-                                scope=IR.Attribute(Int32(mem_scope(resolve(cg, args[6]))))))
+        rt = tile_type(typ)
+        cmp = materialize(resolve(cg, args[2]), rt)
+        val = materialize(resolve(cg, args[3]), rt)
+        sem = IR.Attribute(Int32(mem_sem(resolve(cg, args[5]))))
+        scope = IR.Attribute(Int32(mem_scope(resolve(cg, args[6]))))
+        cas(p, c, v) = v1(tt.atomic_cas(p, c, v; result=rt, sem, scope))
+        mask isa IR.Value || return cas(ptrs, cmp, val)
+        return masked_cas(cas, ptrs, cmp, val, mask, rt)
 
     # ---- reductions ----
     elseif f === :reduce
@@ -1551,6 +1566,51 @@ function assert_once(cv::IR.Value)
     others = v1(arith.cmpi(r, splat_const([n], 0, i32); predicate=IR.Attribute(Int64(1)),  # ne
                            result=bt))
     return v1(arith.ori(v1(tt.splat(cv; result=bt)), others; result=bt))
+end
+
+# tt.atomic_cas has no mask. Masked-out lanes compare-and-swap 0 for 0 at an
+# active lane's address, which leaves memory unchanged whatever order the
+# atomics take, and return 0; with no active lane the CAS is skipped.
+function masked_cas(cas, ptrs::IR.Value, cmp::IR.Value, val::IR.Value, mask::IR.Value, rt)
+    zero = materialize(0, rt)
+    if !is_tensor(ptrs)
+        return v1(scf.if_(mask; results=IR.Type[rt],
+                          thenRegion=yield_region(() -> (cas(ptrs, cmp, val),)),
+                          elseRegion=yield_region(() -> (zero,))))
+    end
+    addr = max_active_addr(ptrs, mask)
+    i64 = IR.Type(Int64)
+    any = v1(arith.cmpi(addr, materialize(0, i64); predicate=IR.Attribute(Int64(1)),  # ne
+                        result=IR.Type(Bool)))
+    pt = IR.type(ptrs)
+    function active()
+        p0 = v1(tt.int_to_ptr(addr; result=tensor_elem(pt)))
+        safe = v1(arith.select(mask, ptrs, v1(tt.splat(p0; result=pt)); result=pt))
+        old = cas(safe, v1(arith.select(mask, cmp, zero; result=rt)),
+                  v1(arith.select(mask, val, zero; result=rt)))
+        return (v1(arith.select(mask, old, zero; result=rt)),)
+    end
+    return v1(scf.if_(any; results=IR.Type[rt], thenRegion=yield_region(active),
+                      elseRegion=yield_region(() -> (zero,))))
+end
+
+"The largest address among the lanes `mask` keeps, as an i64 (0 if none)."
+function max_active_addr(ptrs::IR.Value, mask::IR.Value)
+    sh = tensor_shape(ptrs)
+    i64 = IR.Type(Int64)
+    it = IR.TensorType(sh, i64)
+    a = v1(arith.select(mask, v1(tt.ptr_to_int(ptrs; result=it)), materialize(0, it); result=it))
+    length(sh) == 1 || (a = v1(tt.reshape(a; result=IR.TensorType([prod(sh)], i64))))
+    region = IR.Region()
+    blk = IR.Block([i64, i64], [IR.Location(), IR.Location()])
+    push!(region, blk)
+    IR.activate(blk)
+    try
+        tt.reduce_return([v1(arith.maxui(IR.argument(blk, 1), IR.argument(blk, 2); result=i64))])
+    finally
+        IR.deactivate(blk)
+    end
+    return IR.result(tt.reduce([a]; result=[i64], axis=IR.Attribute(Int32(0)), combineOp=region), 1)
 end
 
 # Floor/ceil division. The AMD backend leaves arith.floordivsi/ceildivsi/
