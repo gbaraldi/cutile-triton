@@ -322,6 +322,21 @@ let len = Int(typemax(Int32))
     buf = nothing; GC.gc()
 end
 
+# --- launch hints ------------------------------------------------------------
+let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
+    k = TritonRun.triton_kernel(vadd, tt; name="vadd", hints=(; num_worker_warps=8))
+    check("num_worker_warps sets the warp count", k.num_warps == 8)
+    err(hints) = try
+        TritonRun.triton_kernel(vadd, tt; name="vadd", hints); ""
+    catch e
+        sprint(showerror, e)
+    end
+    check("invalid num_worker_warps is rejected", occursin("must be either 4 or 8", err((; num_worker_warps=3))))
+    clusters = TritonRun._default_target().backend == "cuda" && TritonRun._default_target().arch >= 100
+    check("num_ctas > 1 needs thread-block clusters",
+          clusters || occursin("num_cta_in_cga", err((; num_ctas=2))))
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)

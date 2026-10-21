@@ -88,13 +88,16 @@ end
 _py_setenv!(k::String, v::String) = (pyimport("os").environ[k] = v; nothing)
 
 "Compile a TTIR string in-process; returns the triton CompiledKernel (Py)."
-function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int)
+function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int;
+                     occupancy::Union{Int,Nothing}=nothing)
     tc, bc = _triton()
     path = joinpath(mktempdir(), "$name.ttir")
     write(path, ttir)
     t = _default_target()
     target = bc.GPUTarget(t.backend, t.arch, t.warp_size)
-    opts = pydict(Dict("num_warps" => num_warps, "num_stages" => num_stages))
+    opts = Dict{String,Any}("num_warps" => num_warps, "num_stages" => num_stages)
+    occupancy === nothing || merge!(opts, occupancy_options(occupancy, num_warps, t))
+    opts = pydict(opts)
     try
         return tc.compile(path; target=target, options=opts)
     catch e
@@ -158,13 +161,50 @@ function tma_eligible(@nospecialize(argtypes), target::TargetInfo=_default_targe
     return !any(has_16bit_float_array, argtypes isa Type ? argtypes.parameters : argtypes)
 end
 
+"""
+Launch hints resolved as cuTile does: the explicit value, else the kernel's
+`@compiler_options` value for this target, validated by cuTile.
+`num_worker_warps` becomes the warp count and `occupancy` a register (NVIDIA)
+or waves-per-EU (AMD) budget. `num_ctas` is checked like the native backend,
+then unused: thread-block clusters are only a performance hint.
+"""
+function resolve_hints(hints, kernel_meta, t::TargetInfo=_default_target())
+    cuda = t.backend == "cuda"
+    # per-architecture `ByTarget` values name NVIDIA targets; on AMD only
+    # their default applies
+    sm = cuda ? VersionNumber(t.arch ÷ 10, t.arch % 10) : v"0"
+    resolve(key) = ct.resolve_hint(get(hints, key, nothing), kernel_meta, key, sm)
+    num_ctas, occupancy, num_worker_warps = map(resolve, (:num_ctas, :occupancy, :num_worker_warps))
+    if num_ctas !== nothing && num_ctas > 1 && !(cuda && t.arch >= 100)
+        throw(ArgumentError("num_cta_in_cga > 1 requires Blackwell (sm_100+), but target is " *
+                            (cuda ? "sm_$(t.arch)" : string(t.arch))))
+    end
+    return (; occupancy, num_worker_warps)
+end
+
+"Compile options that target `occupancy` resident programs per SM / CU."
+function occupancy_options(occupancy::Int, num_warps::Int, t::TargetInfo)
+    if t.backend == "cuda"
+        # 64K registers per SM, in ptxas' allocation granularity of 8
+        regs = 65536 ÷ (occupancy * num_warps * t.warp_size)
+        return Dict{String,Any}("maxnreg" => clamp(regs ÷ 8 * 8, 32, 255))
+    else
+        # a program's waves spread over the CU's 4 SIMDs (EUs), at most 8 each
+        return Dict{String,Any}("waves_per_eu" => clamp(cld(occupancy * num_warps, 4), 1, 8))
+    end
+end
+
 function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
-                                  name::String, use_tma::Bool=true, wide_offsets::Bool=false)
+                                  name::String, use_tma::Bool=true, wide_offsets::Bool=false,
+                                  hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    h = resolve_hints(hints, meta.kernel_meta)
+    pin(ws) = h.num_worker_warps === nothing ? ws : (h.num_worker_warps,)
     if !meta.has_dot
-        return [compile_kernel(ttir, argspec; name, num_warps=w, meta.spans) for w in (4, 8)]
+        return [compile_kernel(ttir, argspec; name, num_warps=w, meta.spans, h.occupancy)
+                for w in pin((4, 8))]
     end
     # dot kernels: TMA-vs-pointer and argument hints both interact with the
     # tensor-core pipeline in shape-dependent ways — race load style × hints
@@ -174,23 +214,25 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
         t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets)
         any(v -> first(v) == t, variants) || push!(variants, (t, m.spans))
     end
-    return [compile_kernel(t, argspec; name, num_warps=w, spans)
-            for (t, spans) in variants for w in (8, 4)]
+    return [compile_kernel(t, argspec; name, num_warps=w, spans, h.occupancy)
+            for (t, spans) in variants for w in pin((8, 4))]
 end
 
 function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        name::String, num_warps::Union{Int,Nothing}=nothing,
                        num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
-                       wide_offsets::Bool=false)
+                       wide_offsets::Bool=false, hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    h = resolve_hints(hints, meta.kernel_meta)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
-    num_warps = num_warps !== nothing ? num_warps : (meta.has_dot ? 8 : 4)
+    num_warps = something(num_warps, h.num_worker_warps, meta.has_dot ? 8 : 4)
     widen = () -> triton_kernel(f, argtypes; name, num_warps, num_stages, use_tma,
-                                wide_offsets=true)
-    return compile_kernel(ttir, argspec; name, num_warps, num_stages, meta.spans, widen)
+                                wide_offsets=true, hints)
+    return compile_kernel(ttir, argspec; name, num_warps, num_stages, meta.spans, widen,
+                          h.occupancy)
 end
 
 # triton's own backend defaults: 3 pipeline stages on NVIDIA, 2 on AMD (64KB LDS)
@@ -204,14 +246,15 @@ _shared_limit() = _default_target().backend == "cuda" ?
 
 function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
                         num_stages::Union{Int,Nothing}=nothing,
-                        spans::Vector{Vector{SpanTerm}}=Vector{SpanTerm}[], widen=nothing)
+                        spans::Vector{Vector{SpanTerm}}=Vector{SpanTerm}[], widen=nothing,
+                        occupancy::Union{Int,Nothing}=nothing)
     explicit_stages = num_stages !== nothing
     num_stages = something(num_stages, _default_stages())
     if haskey(ENV, "TRITON_DUMP_TTIR")
         mkpath(ENV["TRITON_DUMP_TTIR"])
         write(joinpath(ENV["TRITON_DUMP_TTIR"], "$(name)_w$(num_warps)_$(hash(ttir) % 10000).ttir"), ttir)
     end
-    k = _compile_py(ttir, name, num_warps, num_stages)
+    k = _compile_py(ttir, name, num_warps, num_stages; occupancy)
     shared = pyconvert(Int, k.metadata.shared)
     # triton sizes its software pipeline for the tile shape, not the device:
     # a 3-stage matmul that fits an H100's 228KB can exceed a consumer GPU's
@@ -219,7 +262,7 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
     limit = explicit_stages ? nothing : _shared_limit()
     while limit !== nothing && shared > limit && num_stages > 1
         num_stages -= 1
-        k = _compile_py(ttir, name, num_warps, num_stages)
+        k = _compile_py(ttir, name, num_warps, num_stages; occupancy)
         shared = pyconvert(Int, k.metadata.shared)
     end
     t = _default_target()

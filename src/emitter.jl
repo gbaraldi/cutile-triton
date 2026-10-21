@@ -1950,6 +1950,20 @@ function arg_value(entry, kref::Ref{Int}, @nospecialize(T))
     end
 end
 
+# ct.code_structured(f, argtypes; optimize=true), keeping the
+# `@compiler_options` metadata (launch hints) that it drops
+function structured_with_meta(@nospecialize(f), @nospecialize(argtypes))
+    stripped, const_argtypes = ct.process_const_argtypes(f, argtypes)
+    world = Base.get_world_counter()
+    mi = ct.lookup_method_instance(f, stripped; world)
+    cache = ct.CacheView{ct.CuTileResults}(:cuTile, world)
+    ir, rettype = ct.emit_julia(cache, mi; const_argtypes)
+    sci, _, kernel_meta = ct.emit_structured(ir, rettype)
+    sci = copy(sci)
+    ct.run_passes!(sci)
+    return sci, kernel_meta
+end
+
 """
     emit_ttir(f, argtypes; name="kernel") -> (ttir_text, Vector{ArgSpec})
 
@@ -1965,9 +1979,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
     EMIT_DIV_ATTRS[] = h
     EMIT_CONST_STRIDE[] = hints !== nothing ? hints :
                           get(ENV, "TRITON_CONST_STRIDE", "1") != "0"
-    results = ct.code_structured(f, argtypes; optimize=true)
-    length(results) == 1 || error("expected a single specialization")
-    sci, _ = results[1]
+    sci, kernel_meta = structured_with_meta(f, argtypes)
 
     ctx = IR.Context()
     IR.activate(ctx)
@@ -2042,7 +2054,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
     finally
         IR.deactivate(ctx)
     end
-    return text, argspec, (; has_dot=hasdot, has_atomic=hasatomic, spans)
+    return text, argspec, (; has_dot=hasdot, has_atomic=hasatomic, spans, kernel_meta)
 end
 
 end # module

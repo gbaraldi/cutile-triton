@@ -16,29 +16,33 @@ mutable struct ShimKernel{F, TT} <: AbstractKernel{F, TT}
     abi_types::Union{Nothing, Vector{Any}}
     spans::Vector{Vector{TritonEmitter.SpanTerm}}  # every candidate's, checked per launch
     wide::Any            # the i64-offset ShimKernel, once a launch has needed it
+    hints::NamedTuple    # explicit launch hints it was built with
 end
-ShimKernel{F, TT}(cands, chosen, f) where {F, TT} =
-    ShimKernel{F, TT}(cands, chosen, f, nothing, unique(reduce(vcat, (c.spans for c in cands))), nothing)
+ShimKernel{F, TT}(cands, chosen, f, hints) where {F, TT} =
+    ShimKernel{F, TT}(cands, chosen, f, nothing, unique(reduce(vcat, (c.spans for c in cands))),
+                      nothing, hints)
 
 const KERNEL_CACHE = Dict{Any, Any}()
 
 sanitize(s) = (n = replace(s, r"[^A-Za-z0-9_]" => "_"); isempty(n) || isdigit(n[1]) ? "k_" * n : n)
 
-function get_kernel(@nospecialize(f), @nospecialize(tt); wide_offsets::Bool=false)
+function get_kernel(@nospecialize(f), @nospecialize(tt); wide_offsets::Bool=false,
+                    num_ctas=nothing, occupancy=nothing, num_worker_warps=nothing, _...)
+    hints = (; num_ctas, occupancy, num_worker_warps)
     # world counter in the key: method redefinition invalidates (cuTile rides
     # CodeInstance caching for this; a Dict is enough for the harness)
-    key = (f, tt, Base.get_world_counter(), wide_offsets)
+    key = (f, tt, Base.get_world_counter(), wide_offsets, hints)
     haskey(KERNEL_CACHE, key) && return KERNEL_CACHE[key]
     name = sanitize(string(nameof(typeof(f))))
     # TMA off for the coverage run: legality hardening (min box bytes, stride
     # divisibility) is orthogonal to intrinsic coverage.
     cands = if haskey(ENV, "TRITON_NUM_WARPS")
         [TritonRun.triton_kernel(f, tt; name, num_warps=parse(Int, ENV["TRITON_NUM_WARPS"]),
-                                 wide_offsets)]
+                                 wide_offsets, hints)]
     else
-        TritonRun.triton_kernel_candidates(f, tt; name, wide_offsets)
+        TritonRun.triton_kernel_candidates(f, tt; name, wide_offsets, hints)
     end
-    k = ShimKernel{typeof(f), tt}(cands, length(cands) == 1 ? 1 : 0, f)
+    k = ShimKernel{typeof(f), tt}(cands, length(cands) == 1 ? 1 : 0, f, hints)
     KERNEL_CACHE[key] = k
     return k
 end
@@ -180,7 +184,7 @@ function (k::ShimKernel{F, TT})(args...; blocks=1, threads=1, convert=Val(false)
     vals = Any[leaves..., Base.rand(UInt32), NULLP, NULLP]
     if !TritonRun.spans_fit(k.spans, vals)
         # some view's in-tile offsets would overflow i32 for these arguments
-        k.wide === nothing && (k.wide = get_kernel(k.f, TT; wide_offsets=true))
+        k.wide === nothing && (k.wide = get_kernel(k.f, TT; wide_offsets=true, k.hints...))
         return k.wide(args...; blocks, threads, convert, kwargs...)
     end
     length(vals) == length(types) ||
@@ -237,7 +241,7 @@ function install_shim!()
         if compile_hook[] !== nothing
             Base.invokelatest(compile_hook[], f, tt)
         end
-        return $(TritonShim).get_kernel(f, tt)
+        return $(TritonShim).get_kernel(f, tt; kwargs...)
     end
     # cuTile's launch defaults `stream=CUDACore.stream()`, which needs a CUDA
     # driver; shim kernels launch on the backend's current stream regardless.
