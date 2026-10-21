@@ -175,11 +175,6 @@ const USE_TMA = Ref(true)
 # launches whose spans (see `SpanTerm`) do not fit i32.
 const WIDE_OFFSETS = Ref(false)
 
-# Kernel-creation-time switch: the target vendor (:nvidia or :amd), for the
-# lowerings that work around one vendor's backend (see `spread_cas`). The
-# default follows the active target (TritonRun.set_target!).
-const VENDOR = Ref(:nvidia)
-const DEFAULT_VENDOR = Ref(:nvidia)
 
 # TMA legality for a partition view: 2-D, unit-stride inner dim, box dims
 # within CUtensorMap's 256-element limit, ≥16-byte inner box (hardware
@@ -222,8 +217,7 @@ function emit_descriptor(view::ViewInfo)
         end
     end
     rev_sh = reverse(view.tile_shape)
-    desc_t = IR.OpaqueType("tt", "tensordesc<tensor<" *
-                           join(rev_sh, "x") * "x" * string(et) * ">>")
+    desc_t = IR.OpaqueType("tt", "tensordesc<" * join(rev_sh, "x") * "x" * string(et) * ">")
     return v1(tt.make_tensor_descriptor(view.ptr, shape_vals, stride_vals; result=desc_t))
 end
 
@@ -1436,8 +1430,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         val = materialize(resolve(cg, args[3]), rt)
         sem = IR.Attribute(Int32(mem_sem(resolve(cg, args[5]))))
         scope = IR.Attribute(Int32(mem_scope(resolve(cg, args[6]))))
-        cas(p, c, v) = VENDOR[] === :amd && is_tensor(p) ? spread_cas(p, c, v, rt, sem, scope) :
-                       v1(tt.atomic_cas(p, c, v; result=rt, sem, scope))
+        cas(p, c, v) = v1(tt.atomic_cas(p, c, v; result=rt, sem, scope))
         # masked-out elements are untouched and return `expected` (cuTile's contract)
         mask === false && return cmp
         mask isa IR.Value || return cas(ptrs, cmp, val)
@@ -1713,61 +1706,6 @@ function masked_cas(cas, ptrs::IR.Value, cmp::IR.Value, val::IR.Value, mask::IR.
     end
     return v1(scf.if_(any; results=IR.Type[rt], thenRegion=yield_region(active),
                       elseRegion=yield_region(() -> (cmp,))))
-end
-
-# Triton 3.7.1's AMD lowering runs a tensor tt.atomic_cas in every thread
-# holding a copy of an element (fixed in 3.8.0 by triton-lang/triton#9605):
-# the copies after the first see the first's update and return it, and could
-# reapply a CAS another program undid. Spread the CAS so every
-# element has one owner; the added lanes compare-and-swap 0 for 0 at their
-# element's address, which cannot change memory. Repeating each element R >= 2
-# times makes the pointers non-contiguous, so the layout holds one element per
-# thread and 1024 lanes (the most threads a program has) leave no copies; from
-# 8192 elements no layout covers more (1024 threads, 8 16-bit elements each).
-spread_lanes(n::Int) = n >= 8192 ? n : max(1024, 2n)
-
-function spread_cas(ptrs::IR.Value, cmp::IR.Value, val::IR.Value, rt, sem, scope)
-    sh = tensor_shape(ptrs)
-    n = prod(sh)
-    L = spread_lanes(n)
-    et = tensor_elem(rt)
-    pt = tensor_elem(IR.type(ptrs))
-    tensor(e, dims...) = IR.TensorType(Int[dims...], e)
-    flat(x, e) = length(sh) == 1 ? x : v1(tt.reshape(x; result=tensor(e, n)))
-    unflat(x) = length(sh) == 1 ? x : v1(tt.reshape(x; result=IR.TensorType(sh, et)))
-    L == n && return unflat(v1(tt.atomic_cas(flat(ptrs, pt), flat(cmp, et), flat(val, et);
-                                             result=tensor(et, n), sem, scope)))
-    R = L ÷ n
-    function widen(x, e)    # lane i*R + r carries element i
-        x2 = v1(tt.expand_dims(flat(x, e); result=tensor(e, n, 1), axis=Int32(1)))
-        return v1(tt.reshape(v1(tt.broadcast(x2; result=tensor(e, n, R))); result=tensor(e, L)))
-    end
-    i32 = IR.Type(Int32)
-    lane = v1(tt.make_range(; result=tensor(i32, L), start=Int32(0), end_=Int32(L)))
-    r = v1(arith.remsi(lane, materialize(R, tensor(i32, L)); result=tensor(i32, L)))
-    own = v1(arith.cmpi(r, materialize(0, tensor(i32, L)); predicate=IR.Attribute(Int64(0)),
-                        result=tensor(IR.Type(Bool), L)))                               # eq
-    wt = tensor(et, L)
-    zero = materialize(0, wt)
-    old = v1(tt.atomic_cas(widen(ptrs, pt), v1(arith.select(own, widen(cmp, et), zero; result=wt)),
-                           v1(arith.select(own, widen(val, et), zero; result=wt)); result=wt, sem, scope))
-    # each element's result is in its owner lane: reduce its R lanes keeping
-    # the value whose owner flag is set
-    b1 = IR.Type(Bool)
-    region = IR.Region()
-    blk = IR.Block([et, b1, et, b1], [IR.Location() for _ in 1:4])
-    push!(region, blk)
-    IR.activate(blk)
-    try
-        x, ox, y, oy = (IR.argument(blk, i) for i in 1:4)
-        tt.reduce_return([v1(arith.select(ox, x, y; result=et)), v1(arith.ori(ox, oy; result=b1))])
-    finally
-        IR.deactivate(blk)
-    end
-    red = tt.reduce([v1(tt.reshape(old; result=tensor(et, n, R))),
-                     v1(tt.reshape(own; result=tensor(b1, n, R)))];
-                    result=[tensor(et, n), tensor(b1, n)], axis=IR.Attribute(Int32(1)), combineOp=region)
-    return unflat(IR.result(red, 1))
 end
 
 "The largest address among the lanes `mask` keeps, as an i64 (0 if none)."
@@ -2278,10 +2216,9 @@ the launcher needs.
 """
 function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kernel",
                    use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing,
-                   wide_offsets::Bool=false, vendor::Symbol=DEFAULT_VENDOR[])
+                   wide_offsets::Bool=false)
     USE_TMA[] = use_tma
     WIDE_OFFSETS[] = wide_offsets
-    VENDOR[] = vendor
     h = hints !== nothing ? hints : get(ENV, "TRITON_ARG_ATTRS", "1") != "0"
     EMIT_DIV_ATTRS[] = h
     EMIT_CONST_STRIDE[] = hints !== nothing ? hints :

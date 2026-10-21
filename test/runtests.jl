@@ -392,15 +392,6 @@ let k = TritonRun.triton_kernel(cas_masked, Tuple{TA1(Int), TA1(Int), Int64}; na
     check("masked atomic_cas with no active lane", all(==(5), Array(arr)))
 end
 
-# Triton 3.7.1 runs an AMD tensor CAS once per copy of an element; the
-# emitter spreads it so that every element has a single owner
-let io = IOBuffer()
-    TritonRun.code_triton(io, cas_masked, Tuple{TA1(Int), TA1(Int), Int64}; stage=:ttgir,
-                          target=TritonRun.target(:amd), name="cas_masked")
-    check("AMD tensor CAS is spread so each element has one owner",
-          occursin(r"atomic_cas[^\n]*tensor<1024x", String(take!(io))))
-end
-
 # --- launch hints ------------------------------------------------------------
 let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     k = TritonRun.triton_kernel(vadd, tt; name="vadd", hints=(; num_worker_warps=8))

@@ -5,4 +5,4 @@ python = ">=3.10,<4"
 # The Triton compiler is a compile-time-only dependency: TTIR text goes in,
 # cubin + launch metadata come out. Pinned exactly — TTIR is not a stable
 # format across Triton versions.
-triton = "==3.7.1"
+triton = "==3.8.0"

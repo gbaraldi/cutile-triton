@@ -76,11 +76,10 @@ function flatten_rt!(types::Vector{Any}, vals::Vector{Any}, @nospecialize(x), cu
 end
 
 function _launch_one(inner::TritonRun.TritonKernel, types, vals, g)
-    scratch = nothing
-    if inner.global_scratch_size > 0   # NVIDIA-only (TMA descriptors)
-        scratch = CuArray{UInt8}(undef, prod(g) * inner.global_scratch_size)
+    scratch, ptr = TritonRun.global_scratch(inner, g)
+    if scratch !== nothing
         vals = copy(vals)
-        vals[end - 1] = reinterpret(CuPtr{Cvoid}, pointer(scratch))
+        vals[end - 1] = ptr
     end
     GC.@preserve scratch begin
         launchf = TritonRun._raw_launch[] === nothing ? TritonRun._cuda_launch :

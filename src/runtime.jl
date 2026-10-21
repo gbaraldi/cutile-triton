@@ -5,7 +5,7 @@ module TritonRun
 
 using CUDA
 using PythonCall
-using ..TritonEmitter: TritonEmitter, emit_ttir, ArgSpec, SpanTerm
+using ..TritonEmitter: emit_ttir, ArgSpec, SpanTerm
 import cuTile as ct
 
 export triton_kernel, launch!, code_triton, set_target!
@@ -38,11 +38,8 @@ function target(vendor::Symbol; arch=nothing, warp_size=nothing)
     throw(ArgumentError("target: vendor must be :amd or :nvidia, got :$vendor"))
 end
 
-"The target's vendor as the emitter names it."
-vendor(t::TargetInfo=_default_target()) = t.backend == "cuda" ? :nvidia : :amd
-
 const ACTIVE_TARGET = Ref{Union{Nothing,TargetInfo}}(nothing)
-set_target!(t::TargetInfo) = (TritonEmitter.DEFAULT_VENDOR[] = vendor(t); ACTIVE_TARGET[] = t)
+set_target!(t::TargetInfo) = (ACTIVE_TARGET[] = t)
 set_target!(backend, arch, warp_size) = set_target!(TargetInfo(backend, arch, warp_size))
 
 function _default_target()
@@ -144,9 +141,10 @@ end
 function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int;
                      occupancy::Union{Int,Nothing}=nothing, t::TargetInfo=_default_target())
     tc, bc = _triton()
-    # triton 3.7.1's buffer-atomics lowering emits the nonexistent LLVM
-    # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
-    # kills every atomic_xchg at compile; buffer loads/stores stay on
+    # triton 3.8's buffer-atomics lowering emits the nonexistent LLVM
+    # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap, fixed
+    # for 3.9 by triton-lang/triton#11019), which kills every atomic_xchg at
+    # compile; buffer loads/stores stay on
     t.backend == "hip" && _py_setenv!("AMDGCN_USE_BUFFER_ATOMICS", "0")
     path = joinpath(mktempdir(), "$name.ttir")
     write(path, ttir)
@@ -170,7 +168,7 @@ struct TritonKernel
     num_warps::Int
     warp_size::Int
     shared::Int
-    global_scratch_size::Int
+    global_scratch_size::Int # per program; 0 when the kernel needs none
     argspec::Vector{ArgSpec}
     ttir::String
     abi_types::Vector{Any}   # flattened ABI parameter types, fixed per kernel
@@ -256,7 +254,7 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, vendor=vendor())
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
     h = resolve_hints(hints, meta.kernel_meta)
     pin(ws) = h.num_worker_warps === nothing ? ws : (h.num_worker_warps,)
     if !meta.has_dot
@@ -268,7 +266,7 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
     # × warps (unique TTIRs only; e.g. TMA-ineligible kernels dedupe)
     variants = [(ttir, meta.spans)]
     for hints in (true, false)
-        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets, vendor=vendor())
+        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets)
         any(v -> first(v) == t, variants) || push!(variants, (t, m.spans))
     end
     return [compile_kernel(t, argspec; name, num_warps=w, spans, h.occupancy)
@@ -281,7 +279,7 @@ function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        wide_offsets::Bool=false, hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, vendor=vendor())
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
     h = resolve_hints(hints, meta.kernel_meta)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
@@ -325,8 +323,6 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
     t = _default_target()
     bin = pyconvert(Vector{UInt8}, k.asm[t.binkey])
     warp_size = pyconvert(Int, k.metadata.warp_size)
-    # NVIDIA-only metadata field; the AMD backend has no global scratch
-    # (its launcher passes NULL in that ABI slot).
     gss = pyconvert(Int, pygetattr(k.metadata, "global_scratch_size", 0))
     loadf = _load_module[] === nothing ? _cuda_load : _load_module[]
     mod, fun = loadf(bin, name, shared)
@@ -425,6 +421,18 @@ function flatten_vals(spec::Vector{ArgSpec}, args)
 end
 
 """
+Global scratch for a launch of `k` over grid `g`, sized like triton's own
+launchers (grid volume × the per-program size): (owner to keep alive, pointer
+for the ABI's global-scratch slot), or (nothing, nothing). NVIDIA builds TMA
+descriptors there; from triton 3.8 AMD kernels report and use it too.
+"""
+function global_scratch(k::TritonKernel, g)
+    k.global_scratch_size > 0 || return nothing, nothing
+    owner, addr = dev_alloc(prod(g) * k.global_scratch_size)
+    return owner, _default_target().backend == "cuda" ? CuPtr{Cvoid}(addr) : Ptr{Cvoid}(addr)
+end
+
+"""
     launch!(k::TritonKernel, grid, args...)
 
 `grid` is an Int or (gx, gy[, gz]); `args` are the kernel's Julia-level
@@ -435,13 +443,8 @@ function launch!(k::TritonKernel, grid, args...)
     spans_fit(k.spans, vals) || (k = wide_kernel(k))
     types = k.abi_types
     g = grid isa Integer ? (Int(grid), 1, 1) : (length(grid) == 2 ? (grid[1], grid[2], 1) : grid)
-    # TMA descriptors are built in global scratch memory; size it like
-    # Python's launcher: grid volume × num_ctas × per-CTA scratch.
-    scratch = nothing
-    if k.global_scratch_size > 0
-        scratch = CuArray{UInt8}(undef, prod(g) * k.global_scratch_size)
-        vals[end - 1] = reinterpret(CuPtr{Cvoid}, pointer(scratch))
-    end
+    scratch, ptr = global_scratch(k, g)
+    scratch === nothing || (vals[end - 1] = ptr)
     GC.@preserve scratch begin
         launchf = _raw_launch[] === nothing ? _cuda_launch : _raw_launch[]
         launchf(k.fun, types, vals;
@@ -466,7 +469,7 @@ function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      use_tma::Bool=true, target::TargetInfo=_default_target(), hints=(;))
     cuda = target.backend == "cuda"
     use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
-    ttir, _, meta = emit_ttir(f, argtypes; name, use_tma, vendor=vendor(target))
+    ttir, _, meta = emit_ttir(f, argtypes; name, use_tma)
     # the warps and occupancy a launch would compile with
     h = resolve_hints(hints, meta.kernel_meta, target)
     num_warps = something(num_warps, h.num_worker_warps, meta.has_dot ? 8 : 4)
