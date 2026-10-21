@@ -1208,10 +1208,14 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         return v1(arith.remsi(av, bv; result=IR.type(av)))
     elseif f === :negf
         # triton doesn't legalize arith.negf; match Python's `0 - x`
-        a = asvalue(resolve(cg, args[1]))
+        a = resolve(cg, args[1])
+        a isa Number && return -a
+        a = asvalue(a)
         return v1(arith.subf(materialize(0, IR.type(a)), a; result=IR.type(a)))
     elseif f === :negi
-        a = asvalue(resolve(cg, args[1]))
+        a = resolve(cg, args[1])
+        a isa Number && return -a
+        a = asvalue(a)
         return v1(arith.subi(materialize(0, IR.type(a)), a; result=IR.type(a)))
     elseif f === :shri
         a = resolve(cg, args[1]); b = resolve(cg, args[2])
@@ -1308,6 +1312,24 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
                                 atomic_rmw_op=IR.Attribute(Int32(rmw)),
                                 sem=IR.Attribute(Int32(mem_sem(resolve(cg, args[4])))),
                                 scope=IR.Attribute(Int32(mem_scope(resolve(cg, args[5]))))))
+    elseif f in (:atomic_red_view_add, :atomic_red_view_max, :atomic_red_view_min,
+                 :atomic_red_view_or, :atomic_red_view_and, :atomic_red_view_xor)
+        # (view, tile, indices[, token]): relaxed, device-scope reduction of a
+        # tile into the view's tile at `indices`; returns nothing
+        cg.has_atomic = true
+        view = resolve(cg, args[1])::ViewInfo
+        val = asvalue(resolve(cg, args[2]))
+        idxs = resolve(cg, args[3])
+        jelt = jl_eltype(cg, args[2], view.elty)
+        op = Symbol(string(f)[length("atomic_red_view_")+1:end])
+        rmw = op === :add ? (jelt <: AbstractFloat ? 5 : 4) :   # FADD : ADD
+              op === :max ? (jelt <: Unsigned ? 8 : 6) :         # UMAX : MAX
+              op === :min ? (jelt <: Unsigned ? 9 : 7) :         # UMIN : MIN
+              op === :and ? 1 : op === :or ? 2 : 3               # AND / OR / XOR
+        ptrs, mask = view_ptrs_mask(view, Any[(idxs isa Vector ? idxs : (idxs,))...], cg)
+        tt.atomic_rmw(ptrs, val, mask; result=IR.type(val), atomic_rmw_op=IR.Attribute(Int32(rmw)),
+                      sem=IR.Attribute(Int32(1)), scope=IR.Attribute(Int32(1)))   # RELAXED, GPU
+        return nothing
     elseif f === :atomic_cas
         # (ptr_tile, expected, desired, mask, memory_order, memory_scope[, token])
         cg.has_atomic = true
