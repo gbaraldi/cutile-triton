@@ -813,8 +813,7 @@ function walk_stmt!(cg::CG, @nospecialize(stmt), @nospecialize(typ))
         tt.assert(assert_once(materialize(false, IR.Type(Bool))); message=IR.Attribute(stmt.message))
         return nothing
     end
-    stmt isa LoopOp &&
-        error("walk_stmt!: LoopOp not yet supported by the Triton emitter")
+    stmt isa LoopOp && return emit_loop!(cg, stmt, typ)
     if stmt isa GlobalRef || stmt isa Number || stmt isa QuoteNode
         return resolve(cg, stmt)
     end
@@ -1893,6 +1892,83 @@ function emit_for!(cg::CG, op::ForOp, @nospecialize(typ))
         push!(out, kept ? IR.result(forop, (k += 1)) : nothing)
     end
     return out
+end
+
+# A general loop (LoopOp: exits through `continue`/`break`, possibly inside
+# ifs) as an scf.while whose before region runs the body and ends in
+# scf.condition(continuing, values): continue and break values both have the
+# carries' arity, so they are the next carries or the results.
+function emit_loop!(cg::CG, op::LoopOp, @nospecialize(typ))
+    keep = Bool[!is_token_type(a.type) for a in op.body.args]
+    types = IR.Type[tile_type(a.type) for a in op.body.args[keep]]
+    inits = IR.Value[materialize(resolve(cg, x), t)
+                     for (x, t) in zip(op.init_values[keep], types)]
+    before = IR.Region()
+    bblk = IR.Block(types, [IR.Location() for _ in types])
+    push!(before, bblk)
+    IR.activate(bblk)
+    try
+        k = 0
+        for (j, a) in enumerate(op.body.args)
+            cg.blockargs[a.id] = keep[j] ? IR.argument(bblk, (k += 1)) : nothing
+        end
+        flag, vals = walk_loop_tail!(cg, collect(op.body), 1, op.body.terminator, types, keep)
+        scf.condition(flag, vals)
+    finally
+        IR.deactivate(bblk)
+    end
+    after = IR.Region()
+    ablk = IR.Block(types, [IR.Location() for _ in types])
+    push!(after, ablk)
+    IR.activate(ablk)
+    try
+        scf.yield(IR.Value[IR.argument(ablk, i) for i in 1:length(types)])
+    finally
+        IR.deactivate(ablk)
+    end
+    wop = scf.while_(inits; results=types, before, after)
+    k = 0
+    return Any[kept ? IR.result(wop, (k += 1)) : nothing for kept in keep]
+end
+
+loop_exits(blk::SBlock) = blk.terminator isa Union{ContinueOp, BreakOp} ||
+    any(((_, e),) -> e.stmt isa IfOp && (loop_exits(e.stmt.then_region) ||
+                                         loop_exits(e.stmt.else_region)), collect(blk))
+
+# Walk stmts[i:end] of a loop body and then `term`, returning (continuing,
+# values). An if that exits in a branch becomes an scf.if yielding them; the
+# statements after it run inside the branch that falls through.
+function walk_loop_tail!(cg::CG, stmts, i::Int, term, types::Vector{IR.Type}, keep)
+    while i <= length(stmts)
+        idx, entry = stmts[i]
+        st = entry.stmt
+        if st isa IfOp && (loop_exits(st.then_region) || loop_exits(st.else_region))
+            branch(blk) = yield_region() do
+                bstmts = collect(blk)
+                flag, vals = if loop_exits(blk)
+                    walk_loop_tail!(cg, bstmts, 1, blk.terminator, types, keep)
+                else
+                    _walk_stmts!(cg, bstmts, 1, false)
+                    t = blk.terminator
+                    t isa YieldOp && !isempty(t.values) &&
+                        (cg.env[idx] = Any[resolve(cg, x) for x in t.values])
+                    walk_loop_tail!(cg, stmts, i + 1, term, types, keep)
+                end
+                (flag, vals...)
+            end
+            cond = asvalue(resolve(cg, st.condition))
+            ifop = scf.if_(cond; results=IR.Type[IR.Type(Bool); types],
+                           thenRegion=branch(st.then_region), elseRegion=branch(st.else_region))
+            return IR.result(ifop, 1), IR.Value[IR.result(ifop, j + 1) for j in 1:length(types)]
+        end
+        cg.env[idx] = walk_stmt!(cg, st, entry.type)
+        cg.envtype[idx] = entry.type
+        i += 1
+    end
+    term isa Union{ContinueOp, BreakOp} ||
+        error("walk_loop_tail!: loop body ends in $(typeof(term)), not continue/break")
+    vals = IR.Value[materialize(resolve(cg, x), t) for (x, t) in zip(term.values[keep], types)]
+    return materialize(term isa ContinueOp, IR.Type(Bool)), vals
 end
 
 function emit_while!(cg::CG, op::WhileOp, @nospecialize(typ))

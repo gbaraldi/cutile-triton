@@ -322,6 +322,49 @@ let len = Int(typemax(Int32))
     buf = nothing; GC.gc()
 end
 
+# --- general loops (LoopOp): decrementing ranges, break and continue -------
+function down_by_two(data, out, n::Int32)
+    acc = zeros(Float32, (16,))
+    for i in n:Int32(-2):Int32(1)
+        acc = acc .+ ct.load(data, i, (16,))
+    end
+    ct.store(out, Int32(1), acc)
+    return
+end
+function break_mid(data, out, n::Int32)
+    acc = zeros(Float32, (16,))
+    i = Int32(1)
+    while true
+        acc = acc .+ ct.load(data, i, (16,))
+        i >= n && break
+        i += Int32(1)
+    end
+    ct.store(out, Int32(1), acc)
+    return
+end
+function skip_odd(data, out, n::Int32)
+    acc = zeros(Float32, (16,))
+    for i in n:Int32(-1):Int32(1)
+        isodd(i) && continue
+        acc = acc .+ ct.load(data, i, (16,))
+    end
+    ct.store(out, Int32(1), acc)
+    return
+end
+
+let data = GPU.rand(Float32, 16 * 7)
+    h = reshape(Array(data), 16, 7)
+    for (f, want) in ((down_by_two, h[:, 7] + h[:, 5] + h[:, 3] + h[:, 1]),
+                      (break_mid, vec(sum(h; dims=2))),
+                      (skip_odd, h[:, 6] + h[:, 4] + h[:, 2]))
+        k = TritonRun.triton_kernel(f, Tuple{TA1(Float32), TA1(Float32), Int32}; name=string(nameof(f)))
+        out = GPU.zeros(Float32, 16)
+        TritonRun.launch!(k, 1, data, out, Int32(7))
+        GPU.synchronize()
+        check("general loop: $(nameof(f))", Array(out) ≈ want)
+    end
+end
+
 # --- masked atomic_cas: out-of-bounds lanes, and no active lane at all -------
 function cas_masked(arr, out, lim::Int64)
     indices = ct.arange(16; dtype=Int)
