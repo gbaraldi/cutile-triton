@@ -433,6 +433,34 @@ let a = copyto!(GPU.zeros(Float32, 8, 8), reshape(Float32.(1:64), 8, 8))
 end
 
 # --- review regressions --------------------------------------------------------
+# an exit inside a nested if: the statements after the outer if still run
+function nested_break(data, out, n::Int32, m::Int32)
+    acc = zeros(Float32, (16,))
+    i = Int32(1)
+    while true
+        if i > m
+            if i >= n
+                break
+            end
+            acc = acc .+ ct.load(data, i, (16,))
+        end
+        acc = acc .+ 1f0
+        i += Int32(1)
+    end
+    ct.store(out, Int32(1), acc)
+    return
+end
+
+let data = GPU.rand(Float32, 16 * 7)
+    h = reshape(Array(data), 16, 7)
+    k = TritonRun.triton_kernel(nested_break, Tuple{TA1(Float32), TA1(Float32), Int32, Int32};
+                                name="nested_break")
+    out = GPU.zeros(Float32, 16)
+    TritonRun.launch!(k, 1, data, out, Int32(5), Int32(2))
+    GPU.synchronize()
+    check("general loop: break in a nested if", Array(out) ≈ h[:, 3] + h[:, 4] .+ 4)
+end
+
 # masked-out CAS lanes keep memory and return `expected`
 function cas_expected(arr, out, lim::Int64)
     indices = ct.arange(16; dtype=Int)
@@ -462,6 +490,46 @@ let k = TritonRun.triton_kernel(cas_expected, Tuple{TA1(Int), TA1(Int), Int64}; 
         GPU.synchronize()
         check("scalar CAS with $name mask", Array(arr)[1] == 7 && Array(out)[1] == 7)
     end
+end
+
+# a single tile index on a 2-D array means (index, 1), as in the native backend
+function red_one_index(out, j::Int32)
+    ct.atomic_store_add(out, j, ones(Float32, (4, 4)))
+    return
+end
+
+let k = TritonRun.triton_kernel(red_one_index, Tuple{TA2(Float32), Int32}; name="red_one_index")
+    out = GPU.zeros(Float32, 8, 16)
+    TritonRun.launch!(k, 1, out, Int32(2))          # tile (2, 1): rows 5:8, cols 1:4
+    TritonRun.launch!(k, 1, out, Int32(3))          # tile (3, 1): out of bounds
+    GPU.synchronize()
+    h = Array(out)
+    check("one index on a 2-D view pads the rest with 1",
+          all(==(1f0), h[5:8, 1:4]) && count(!iszero, h) == 16)
+end
+
+# every padding mode, on the pointer (Float32) and descriptor (Float16) paths
+function pad_load(a, b, ::Val{P}) where {P}
+    ct.store(b, (1, 1), ct.load(a, (1, 1), (4, 8); padding_mode=P))
+    return
+end
+
+for T in (Float32, Float16), (P, want) in ((ct.PaddingMode.PosInf, Inf), (ct.PaddingMode.NegInf, -Inf),
+                                           (ct.PaddingMode.Nan, NaN), (ct.PaddingMode.NegZero, -0.0))
+    k = TritonRun.triton_kernel(pad_load, Tuple{TA2(T), TA2(T), Val{P}}; name="pad_load")
+    a = GPU.ones(T, 2, 8); b = GPU.zeros(T, 4, 8)
+    TritonRun.launch!(k, 1, a, b)
+    GPU.synchronize()
+    h = Array(b)
+    check("$P padding of $T", all(==(one(T)), h[1:2, :]) && all(x -> isequal(x, T(want)), h[3:4, :]))
+end
+let msg = try
+        TritonRun.triton_kernel(pad_load, Tuple{TA2(Int32), TA2(Int32), Val{ct.PaddingMode.NegInf}};
+                                name="pad_load"); ""
+    catch e
+        sprint(showerror, e)
+    end
+    check("non-zero padding of integers is rejected", occursin("can only be used with floating point", msg))
 end
 
 # --- candidate racing applies a read-modify-write kernel exactly once -------

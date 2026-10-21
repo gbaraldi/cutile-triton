@@ -116,7 +116,7 @@ mutable struct ViewInfo
     strides::Vector{Any}
     elty::DataType
     tile_shape::Union{Nothing,Vector{Int}}   # set once it's a partition view
-    padding::Symbol            # :undetermined | :zero | :neginf
+    padding::Symbol            # :undetermined | :zero | :negzero | :nan | :posinf | :neginf
     contiguous::Bool           # ArraySpec.Contiguous (Julia dim 1 has stride 1)
     desc::Union{Nothing,IR.Value}  # !tt.tensordesc — set when the TMA path is used
     order::Union{Nothing,Vector{Int}}  # dim permutation: tile dim d ↔ array dim order[d]
@@ -125,6 +125,26 @@ end
 ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order) =
     ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order, tile_shape)
 view_step(view::ViewInfo, d::Int) = view.step === nothing ? view.tile_shape[d] : view.step[d]
+
+"cuTile's padding mode as the view's padding symbol."
+function padding_symbol(pm)
+    s = Symbol(pm)
+    s === :Zero ? :zero : s === :NegZero ? :negzero : s === :Nan ? :nan :
+    s === :PosInf ? :posinf : s === :NegInf ? :neginf : :undetermined
+end
+
+"""
+The value out-of-bounds elements read as (`nothing` when undetermined). As in
+the native backend, only zero padding applies to non-float elements.
+"""
+function padding_value(pad::Symbol, elty)
+    pad === :undetermined && return nothing
+    pad === :zero && return elty <: AbstractFloat ? 0.0 : 0
+    elty <: AbstractFloat ||
+        error("padding_value $(Dict(:negzero => "neg_zero", :nan => "nan", :posinf => "pos_inf",
+              :neginf => "neg_inf")[pad]) can only be used with floating point element types, got $elty")
+    return pad === :negzero ? -0.0 : pad === :nan ? NaN : pad === :posinf ? Inf : -Inf
+end
 
 # A gather/scatter view: along `sparse_dim` the tile's coordinates are a 1-D
 # tile of element indices, along every other dim a scalar element start plus
@@ -162,8 +182,8 @@ const VENDOR = Ref(:nvidia)
 # TMA legality for a partition view: 2-D, unit-stride inner dim, box dims
 # within CUtensorMap's 256-element limit, ≥16-byte inner box (hardware
 # minimum — a 4-byte inner box traps the GPU). OOB zero-fill covers :zero
-# and :undetermined directly; :neginf is recovered with an arithmetic select
-# after the load (see emit_view_load). Dtype heuristic from measurement:
+# and :undetermined directly; other paddings are recovered with an arithmetic
+# select after the load (see emit_view_load). Dtype heuristic from measurement:
 # descriptors are a large win for ≤16-bit element types and a regression for
 # f32/tf32 on triton 3.7's Hopper pipeline, so gate on element size.
 tma_eligible(N, tile_shape, pad, contiguous, elty) =
@@ -567,25 +587,14 @@ function gs_ptrs_mask(view::GSViewInfo, idxs::Vector{Any}, check::Bool)
 end
 
 """
-A linear (single) tile index over an N-D partition view delinearizes
-column-major over the per-dim tile counts: idx_d = (lin ÷ ∏nt_{<d}) mod nt_d.
+Tile indices for every dim of an N-D view: the missing trailing ones are 0, as
+the native backend pads them. An index past its dim's tile count then selects
+no element rather than wrapping into the next dim.
 """
-function delinearize_index(view::ViewInfo, idxs::Vector{Any})
+function full_view_indices(view::ViewInfo, idxs::Vector{Any})
     N = length(view.tile_shape)
-    (length(idxs) == 1 && N > 1) || return idxs
-    i32 = IR.Type(Int32)
-    lin = idxs[1] isa IR.Value ? as_i32(idxs[1]) : const_i32(Int(idxs[1]))
-    out = Any[]
-    for d in 1:N
-        nt = index_space_extent(view, d)
-        if d < N
-            push!(out, v1(arith.remsi(lin, nt; result=i32)))
-            lin = v1(arith.divsi(lin, nt; result=i32))
-        else
-            push!(out, lin)
-        end
-    end
-    return out
+    length(idxs) >= N && return idxs
+    return Any[idxs..., zeros(Int, N - length(idxs))...]
 end
 
 """
@@ -593,7 +602,7 @@ Compute (ptrs, mask) for a partition-view access at tile index `idxs`
 (0-based, per Julia dim). Returns (ptrs::Value, mask::Value or nothing).
 """
 function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
-    idxs = delinearize_index(view, idxs)
+    idxs = full_view_indices(view, idxs)
     sh = view.tile_shape
     N = length(sh)
     i32 = IR.Type(Int32)
@@ -659,7 +668,7 @@ end
 
 # Element offsets for descriptor access: idx_d * tile_d, reversed axis order.
 function desc_offsets(view::ViewInfo, idxs::Vector{Any})
-    idxs = delinearize_index(view, idxs)
+    idxs = full_view_indices(view, idxs)
     i32 = IR.Type(Int32)
     offs = IR.Value[]
     for d in length(view.tile_shape):-1:1
@@ -672,7 +681,7 @@ end
 
 "Just the in-bounds mask of a partition-view access (no pointer math)."
 function view_bounds_mask(view::ViewInfo, idxs::Vector{Any})
-    idxs = delinearize_index(view, idxs)
+    idxs = full_view_indices(view, idxs)
     sh = view.tile_shape
     N = length(sh)
     i32 = IR.Type(Int32)
@@ -701,27 +710,23 @@ function emit_view_load(view::ViewInfo, idxs::Vector{Any}, cg::CG)
     if view.desc !== nothing
         res_t = tensor_of(view.tile_shape, scalar_type(view.elty))
         loaded = v1(tt.descriptor_load(view.desc, desc_offsets(view, idxs); result=res_t))
-        if view.padding === :neginf
-            # TMA can only zero-fill OOB; recover NegInf semantics with an
-            # arithmetic select — data movement stays on TMA, the -inf mask
-            # is register-only index math (what Triton attention kernels do).
+        pad = padding_value(view.padding, view.elty)
+        if pad !== nothing && !(pad == 0 && !signbit(pad))
+            # TMA can only zero-fill OOB; recover any other padding with an
+            # arithmetic select — data movement stays on TMA, the mask is
+            # register-only index math (what Triton attention kernels do).
             m = view_bounds_mask(view, idxs)
-            ninf = splat_const(view.tile_shape, -Inf, scalar_type(view.elty))
-            return v1(arith.select(m, loaded, ninf; result=res_t))
+            fill = splat_const(view.tile_shape, pad, scalar_type(view.elty))
+            return v1(arith.select(m, loaded, fill; result=res_t))
         end
         return loaded
     end
     ptrs, mask = view_ptrs_mask(view, idxs, cg)
     res_t = tensor_of(view.tile_shape, storage_type(view.elty))
-    loaded = if view.padding === :zero
-        other = splat_const(view.tile_shape, zero(view.elty <: Integer || view.elty === Bool ? Int : Float64), storage_type(view.elty))
-        v1(tt.load(ptrs, mask; other=other, result=res_t))
-    elseif view.padding === :neginf
-        other = splat_const(view.tile_shape, -Inf, storage_type(view.elty))
-        v1(tt.load(ptrs, mask; other=other, result=res_t))
-    else
-        v1(tt.load(ptrs, mask; result=res_t))
-    end
+    pad = padding_value(view.padding, view.elty)
+    loaded = pad === nothing ? v1(tt.load(ptrs, mask; result=res_t)) :
+             v1(tt.load(ptrs, mask; other=splat_const(view.tile_shape, pad, storage_type(view.elty)),
+                        result=res_t))
     return view.elty === Bool ? to_register_i1(loaded) : loaded
 end
 
@@ -988,8 +993,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
     elseif f === :make_partition_view
         base = resolve(cg, args[1])::ViewInfo
         shape = resolve(cg, args[2])
-        pm = Symbol(resolve(cg, args[3]))
-        pad = pm === :Zero ? :zero : pm === :NegInf ? :neginf : :undetermined
+        pad = padding_symbol(resolve(cg, args[3]))
         ord = length(args) >= 4 ? resolve(cg, args[4]) : nothing
         order = ord isa Tuple ? Int[ord...] : nothing
         view = ViewInfo(base.ptr, base.sizes, base.strides, base.elty,
@@ -1006,8 +1010,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         base = resolve(cg, args[1])::ViewInfo
         shape = resolve(cg, args[2])
         step = resolve(cg, args[3])
-        pm = Symbol(resolve(cg, args[4]))
-        pad = pm === :Zero ? :zero : pm === :NegInf ? :neginf : :undetermined
+        pad = padding_symbol(resolve(cg, args[4]))
         ord = length(args) >= 5 ? resolve(cg, args[5]) : nothing
         order = ord isa Tuple ? Int[ord...] : nothing
         view = ViewInfo(base.ptr, base.sizes, base.strides, base.elty,
@@ -1030,8 +1033,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         return emit_view_load(view, Any[idxs...], cg)
     elseif f === :make_gather_scatter_view
         # (tensor_view, shape, sparse_dim, padding_mode)
-        pm = Symbol(resolve(cg, args[4]))
-        pad = pm === :Zero ? :zero : pm === :NegInf ? :neginf : :undetermined
+        pad = padding_symbol(resolve(cg, args[4]))
         return GSViewInfo(resolve(cg, args[1])::ViewInfo, Int[resolve(cg, args[2])...],
                           Int(resolve(cg, args[3])), pad)
     elseif f === :load_gather_scatter_view
@@ -1040,8 +1042,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         ptrs, mask = gs_ptrs_mask(view, Any[resolve(cg, args[4])...], resolve(cg, args[5]) !== false)
         et = storage_type(view.base.elty)
         res_t = tensor_of(view.shape, et)
-        pad = view.padding === :zero ? Base.zero(view.base.elty <: AbstractFloat ? Float64 : Int) :
-              view.padding === :neginf ? -Inf : nothing
+        pad = padding_value(view.padding, view.base.elty)
         loaded = mask === nothing || pad === nothing ? v1(tt.load(ptrs, mask; result=res_t)) :
                  v1(tt.load(ptrs, mask; other=splat_const(view.shape, pad, et), result=res_t))
         return view.base.elty === Bool ? to_register_i1(loaded) : loaded
@@ -2081,23 +2082,21 @@ loop_exits(blk::SBlock) = blk.terminator isa Union{ContinueOp, BreakOp} ||
 
 # Walk stmts[i:end] of a loop body and then `term`, returning (continuing,
 # values). An if that exits in a branch becomes an scf.if yielding them; the
-# statements after it run inside the branch that falls through.
-function walk_loop_tail!(cg::CG, stmts, i::Int, term, types::Vector{IR.Type}, keep)
+# statements after it run inside each branch that falls through. `after`
+# continues the enclosing block when this one ends in a yield instead of an
+# exit (a branch whose exit is in a nested if).
+function walk_loop_tail!(cg::CG, stmts, i::Int, term, types::Vector{IR.Type}, keep;
+                         after=nothing)
     while i <= length(stmts)
         idx, entry = stmts[i]
         st = entry.stmt
         if st isa IfOp && (loop_exits(st.then_region) || loop_exits(st.else_region))
+            rest() = walk_loop_tail!(cg, stmts, i + 1, term, types, keep; after)
             branch(blk) = yield_region() do
-                bstmts = collect(blk)
-                flag, vals = if loop_exits(blk)
-                    walk_loop_tail!(cg, bstmts, 1, blk.terminator, types, keep)
-                else
-                    _walk_stmts!(cg, bstmts, 1, false)
-                    t = blk.terminator
-                    t isa YieldOp && !isempty(t.values) &&
-                        (cg.env[idx] = Any[resolve(cg, x) for x in t.values])
-                    walk_loop_tail!(cg, stmts, i + 1, term, types, keep)
-                end
+                t = blk.terminator
+                bind() = (t isa YieldOp && !isempty(t.values) &&
+                          (cg.env[idx] = Any[resolve(cg, x) for x in t.values]); rest())
+                flag, vals = walk_loop_tail!(cg, collect(blk), 1, t, types, keep; after=bind)
                 (flag, vals...)
             end
             cond = asvalue(resolve(cg, st.condition))
@@ -2109,8 +2108,11 @@ function walk_loop_tail!(cg::CG, stmts, i::Int, term, types::Vector{IR.Type}, ke
         cg.envtype[idx] = entry.type
         i += 1
     end
-    term isa Union{ContinueOp, BreakOp} ||
-        error("walk_loop_tail!: loop body ends in $(typeof(term)), not continue/break")
+    if !(term isa Union{ContinueOp, BreakOp})
+        after === nothing &&
+            error("walk_loop_tail!: loop body ends in $(typeof(term)), not continue/break")
+        return after()
+    end
     vals = IR.Value[materialize(resolve(cg, x), t) for (x, t) in zip(term.values[keep], types)]
     return materialize(term isa ContinueOp, IR.Type(Bool)), vals
 end
