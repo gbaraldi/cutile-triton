@@ -532,6 +532,30 @@ let msg = try
     check("non-zero padding of integers is rejected", occursin("can only be used with floating point", msg))
 end
 
+# reflection matches what a launch compiles: AMD atomics, f16 CAS, RDNA, hints
+function xchg_tile(arr, out)
+    indices = ct.arange(16; dtype=Int32)
+    ct.scatter(out, indices, ct.atomic_xchg(arr, indices, Int32(3)))
+    return
+end
+function cas_f16(arr, out)
+    indices = ct.arange(16; dtype=Int32)
+    ct.scatter(out, indices, ct.atomic_cas(arr, indices, Float16(0), Float16(1)))
+    return
+end
+
+let amd = TritonRun.target(:amd)
+    reflect(f, tt; kw...) = (io = IOBuffer(); TritonRun.code_triton(io, f, tt; name="k", kw...); String(take!(io)))
+    check("AMD reflection of atomic_xchg",
+          occursin("gfx942", reflect(xchg_tile, Tuple{TA1(Int32), TA1(Int32)}; stage=:amdgcn, target=amd)))
+    check("AMD reflection of an f16 CAS",
+          occursin("gfx942", reflect(cas_f16, Tuple{TA1(Float16), TA1(Float16)}; stage=:amdgcn, target=amd)))
+    check("RDNA targets are wave32", TritonRun.target(:amd; arch="gfx1100").warp_size == 32)
+    tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
+    check("reflection follows launch hints",
+          occursin("\"ttg.num-warps\" = 8", reflect(vadd, tt; stage=:ttgir, hints=(; num_worker_warps=8))))
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)

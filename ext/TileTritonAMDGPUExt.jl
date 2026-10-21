@@ -59,10 +59,6 @@ function TileTriton.use_rocm!()
     _sync[] = AMDGPU.synchronize
     _dev_alloc[] = _hip_alloc
     _dev_copy[] = _hip_copy
-    # triton 3.7.1's buffer-atomics lowering emits the nonexistent LLVM
-    # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
-    # kills every atomic_xchg at compile. Buffer loads/stores stay on.
-    TritonRun._py_setenv!("AMDGCN_USE_BUFFER_ATOMICS", "0")
     _retarget_cutile!()
     @info "TileTriton targeting ROCm" arch wavefront=ws
     return nothing

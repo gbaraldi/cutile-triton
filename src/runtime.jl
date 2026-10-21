@@ -5,7 +5,7 @@ module TritonRun
 
 using CUDA
 using PythonCall
-using ..TritonEmitter: emit_ttir, ArgSpec, SpanTerm
+using ..TritonEmitter: TritonEmitter, emit_ttir, ArgSpec, SpanTerm
 import cuTile as ct
 
 export triton_kernel, launch!, code_triton, set_target!
@@ -26,11 +26,15 @@ TargetInfo(backend, arch, warp_size) =
     TritonRun.target(:amd; arch="gfx942") / TritonRun.target(:nvidia; arch=90)
 
 A target to reflect for (`code_triton(...; target)`) without its GPU: the
-wheel compiles for either vendor offline.
+wheel compiles for either vendor offline. AMD's wavefront is 64 lanes on CDNA
+(gfx9) and 32 on RDNA unless `warp_size` says otherwise.
 """
-function target(vendor::Symbol; arch=nothing)
-    vendor === :amd && return TargetInfo("hip", something(arch, "gfx942"), 64)
-    vendor === :nvidia && return TargetInfo("cuda", something(arch, 90), 32)
+function target(vendor::Symbol; arch=nothing, warp_size=nothing)
+    if vendor === :amd
+        arch = something(arch, "gfx942")
+        return TargetInfo("hip", arch, something(warp_size, startswith(arch, "gfx9") ? 64 : 32))
+    end
+    vendor === :nvidia && return TargetInfo("cuda", something(arch, 90), something(warp_size, 32))
     throw(ArgumentError("target: vendor must be :amd or :nvidia, got :$vendor"))
 end
 
@@ -38,7 +42,7 @@ end
 vendor(t::TargetInfo=_default_target()) = t.backend == "cuda" ? :nvidia : :amd
 
 const ACTIVE_TARGET = Ref{Union{Nothing,TargetInfo}}(nothing)
-set_target!(t::TargetInfo) = (ACTIVE_TARGET[] = t)
+set_target!(t::TargetInfo) = (TritonEmitter.DEFAULT_VENDOR[] = vendor(t); ACTIVE_TARGET[] = t)
 set_target!(backend, arch, warp_size) = set_target!(TargetInfo(backend, arch, warp_size))
 
 function _default_target()
@@ -108,6 +112,10 @@ _py_setenv!(k::String, v::String) = (pyimport("os").environ[k] = v; nothing)
 function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int;
                      occupancy::Union{Int,Nothing}=nothing, t::TargetInfo=_default_target())
     tc, bc = _triton()
+    # triton 3.7.1's buffer-atomics lowering emits the nonexistent LLVM
+    # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
+    # kills every atomic_xchg at compile; buffer loads/stores stay on
+    t.backend == "hip" && _py_setenv!("AMDGCN_USE_BUFFER_ATOMICS", "0")
     path = joinpath(mktempdir(), "$name.ttir")
     write(path, ttir)
     target = bc.GPUTarget(t.backend, t.arch, t.warp_size)
@@ -421,18 +429,22 @@ shows the MI300A's code on any machine.
 """
 function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      stage::Symbol=:ttir, name::String="kernel",
-                     num_warps::Int=4, num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
-                     target::TargetInfo=_default_target())
+                     num_warps::Union{Int,Nothing}=nothing, num_stages::Union{Int,Nothing}=nothing,
+                     use_tma::Bool=true, target::TargetInfo=_default_target(), hints=(;))
     cuda = target.backend == "cuda"
     use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
-    ttir, _ = emit_ttir(f, argtypes; name, use_tma, vendor=vendor(target))
+    ttir, _, meta = emit_ttir(f, argtypes; name, use_tma, vendor=vendor(target))
+    # the warps and occupancy a launch would compile with
+    h = resolve_hints(hints, meta.kernel_meta, target)
+    num_warps = something(num_warps, h.num_worker_warps, meta.has_dot ? 8 : 4)
     if stage === :ttir
         print(io, ttir)
         return nothing
     end
     stage in (:ptx, :sass) && !cuda && throw(ArgumentError("code_triton: :$stage is NVIDIA-only; use :amdgcn"))
     stage === :amdgcn && cuda && throw(ArgumentError("code_triton: :amdgcn is AMD-only; use :ptx or :sass"))
-    k = _compile_py(ttir, name, num_warps, something(num_stages, _default_stages(target)); t=target)
+    k = _compile_py(ttir, name, num_warps, something(num_stages, _default_stages(target));
+                    occupancy=h.occupancy, t=target)
     if stage === :sass
         cubin_path = joinpath(mktempdir(), "$name.cubin")
         write(cubin_path, pyconvert(Vector{UInt8}, k.asm["cubin"]))

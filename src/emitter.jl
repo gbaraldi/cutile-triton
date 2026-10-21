@@ -176,8 +176,10 @@ const USE_TMA = Ref(true)
 const WIDE_OFFSETS = Ref(false)
 
 # Kernel-creation-time switch: the target vendor (:nvidia or :amd), for the
-# lowerings that work around one vendor's backend (see `spread_cas`).
+# lowerings that work around one vendor's backend (see `spread_cas`). The
+# default follows the active target (TritonRun.set_target!).
 const VENDOR = Ref(:nvidia)
+const DEFAULT_VENDOR = Ref(:nvidia)
 
 # TMA legality for a partition view: 2-D, unit-stride inner dim, box dims
 # within CUtensorMap's 256-element limit, ≥16-byte inner box (hardware
@@ -2276,7 +2278,7 @@ the launcher needs.
 """
 function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kernel",
                    use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing,
-                   wide_offsets::Bool=false, vendor::Symbol=:nvidia)
+                   wide_offsets::Bool=false, vendor::Symbol=DEFAULT_VENDOR[])
     USE_TMA[] = use_tma
     WIDE_OFFSETS[] = wide_offsets
     VENDOR[] = vendor
