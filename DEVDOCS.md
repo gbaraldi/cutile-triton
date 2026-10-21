@@ -36,13 +36,13 @@ every tensor-descriptor kernel failed there); `TritonRun` runs that stage
 first, as for a Python kernel. It costs ~2% of compile time and changes no
 measured kernel time, since cuTile's optimizer already simplifies. The kernel ABI is triton's: the declared arguments (a TileArray
 flattens to pointer, sizes, strides), the implicit KernelState seed, then a
-global-scratch and a profile-scratch pointer. TMA descriptors need global
-scratch on NVIDIA; AMD passes NULL there (`global_scratch_size` is absent
-from hip metadata).
+global-scratch and a profile-scratch pointer. When a kernel reports
+`global_scratch_size` (TMA descriptors on NVIDIA; AMD kernels too from triton
+3.8) the launchers allocate grid volume × that size, as triton's do; the
+profile slot is NULL.
 
-Kernel-creation-time switches (`USE_TMA`, `WIDE_OFFSETS`, `VENDOR`) are
-module-level `Ref`s set by `emit_ttir`'s keywords; the vendor defaults to the
-active target, which `TritonRun.set_target!` records.
+Kernel-creation-time switches (`USE_TMA`, `WIDE_OFFSETS`) are module-level
+`Ref`s set by `emit_ttir`'s keywords.
 
 ## Candidates and racing
 
@@ -119,8 +119,7 @@ shared memory (AMD has no such query; triton defaults to 2 stages there).
   calls build ROCArrays.
 - Every hip compile sets `AMDGCN_USE_BUFFER_ATOMICS=0` (see below); buffer
   loads and stores stay on.
-- Tensor floor/ceil divisions are expanded, and tensor CAS is spread over
-  ≥ 1,024 lanes (`spread_cas`), both for triton 3.7.1 bugs below.
+- Tensor floor/ceil divisions are expanded (see below).
 
 ## Reflection
 
@@ -150,57 +149,58 @@ kernel), `TILETRITON_MAKE_TTIR=0` (skip triton's TTIR stage),
 ## Performance notes
 
 H100 NVL vs native tileiras on cuTile's examples (`bench/examples.jl`,
-October 2026, cuTile 1.0.0, minimum of 20 runs):
+October 2026, cuTile 1.0.0, triton 3.8.0; minimum of 20 runs, better of two
+passes):
 
 | workload | native | triton | triton / native |
 |---|---|---|---|
-| fft | 188 µs | 62 µs | 3.05× |
-| layernorm fwd | 1,783 GB/s | 4,427 GB/s | 2.49× |
-| layernorm bwd | 398 GB/s | 805 GB/s | 2.02× |
-| softmax (TMA) | 1,645 GB/s | 2,749 GB/s | 1.67× |
-| softmax (chunked) | 3,944 GB/s | 4,929 GB/s | 1.25× |
-| matmul (f32) | 64.6 TFLOPS | 65.9 TFLOPS | 1.02× |
-| transpose | 3,248 GB/s | 3,239 GB/s | 1.00× |
-| vadd | 3,551 GB/s | 3,551 GB/s | 1.00× |
-| fmha | 294 TFLOPS | 270 TFLOPS | 0.92× |
-| moe | 90.7 TFLOPS | 51.5 TFLOPS | 0.57× |
-| batchmatmul | 111 TFLOPS | 52.0 TFLOPS | 0.47× |
+| fft | 188 µs | 63 µs | 2.98× |
+| layernorm fwd | 1,783 GB/s | 4,505 GB/s | 2.53× |
+| layernorm bwd | 398 GB/s | 793 GB/s | 1.99× |
+| softmax (TMA) | 1,645 GB/s | 2,740 GB/s | 1.67× |
+| softmax (chunked) | 3,944 GB/s | 4,978 GB/s | 1.26× |
+| matmul (f32) | 64.6 TFLOPS | 65.0 TFLOPS | 1.01× |
+| transpose | 3,248 GB/s | 3,238 GB/s | 1.00× |
+| vadd | 3,551 GB/s | 3,559 GB/s | 1.00× |
+| moe | 90.7 TFLOPS | 88.9 TFLOPS | 0.98× |
+| fmha | 294 TFLOPS | 265 TFLOPS | 0.90× |
+| batchmatmul | 111 TFLOPS | 52.6 TFLOPS | 0.47× |
 
-The kernels behind are tensor-core-scheduling bound, where tileiras
-warp-specializes automatically (triton's Hopper warp specialization is still
-immature upstream). f16 matmul 4096³ through descriptors reached 541 TFLOPS
-at 128×256×64 (tileiras 447, cuBLAS 512; August 2026).
+Against triton 3.7.1, 3.8.0 lifts moe from 52 to 89 TFLOPS and costs ~5% on
+fmha, layernorm bwd and fft. batchmatmul (and fmha) are tensor-core
+scheduling bound, where tileiras warp-specializes automatically; triton's
+Hopper warp specialization is still immature upstream. f16 matmul 4096³
+through descriptors reached 541 TFLOPS at 128×256×64 (tileiras 447, cuBLAS
+512; August 2026).
 
 MI300A vs native AMDGPU.jl (`bench/rocm_compare.jl`, October 2026, ROCm
-7.2.4, cuTile 1.0.0, untuned single tile shape):
+7.2.4, cuTile 1.0.0, triton 3.8.0, untuned single tile shape):
 
 | workload | triton | native AMDGPU.jl |
 |---|---|---|
-| vadd 2²⁸ | 2,642 GB/s | 3,064 GB/s broadcast / 2,943 `@roc` |
-| rowsum 131072×512 | 1,806 GB/s | 189 GB/s (`sum!`, GPUArrays mapreduce) |
-| softmax 4096×16384 | 2,888 GB/s | 214 GB/s (GPUArrays composition) |
-| matmul f16 4096³ | 133.3 TFLOPS | 3.3 `mul!` (earlier run: 224.1 `gemm_ex`, 71.8 `gemm!`) |
-| matmul f32 4096³ | 51.4 TFLOPS | 57.0 rocBLAS |
+| vadd 2²⁸ | 3,024 GB/s | 2,855 GB/s broadcast / 2,795 `@roc` |
+| rowsum 131072×512 | 1,839 GB/s | 191 GB/s (`sum!`, GPUArrays mapreduce) |
+| softmax 4096×16384 | 2,673 GB/s | 211 GB/s (GPUArrays composition) |
+| matmul f16 4096³ | 226.9 TFLOPS | 3.3 `mul!` (earlier run: 224.1 `gemm_ex`, 71.8 `gemm!`) |
+| matmul f32 4096³ | 63.2 TFLOPS | 54.1 rocBLAS |
 
-Streaming is ~10–14% behind native, tile reductions and fusions are 9–13×
-ahead of GPUArrays, and f32 matmul is at 90% of rocBLAS. rowsum measured
-2,441 GB/s with cuTile 0.3.2 and ~1,800 with cuTile 1.0, with both this
-code and the code before the October changes (unexplained). Matmul tile
-shapes are NVIDIA-tuned; CDNA autotuning (`waves_per_eu`,
-`matrix_instr_nonkdim`, `kpack`) is the open lever. `mul!` on Float16 falls
-into GPUArrays' generic kernel on Julia 1.12 (`generic_matmatmul_wrapper!`),
-an AMDGPU.jl bug.
+vadd is ahead of native, tile reductions and fusions are 10–13× ahead of
+GPUArrays, f32 matmul beats rocBLAS by 17%, and f16 matmul matches rocBLAS's
+tuned `gemm_ex` path. The benchmark builds its argument types from the actual
+arrays (`ct.TileArray`), as `ct.launch` does: the hand-written `ArraySpec`s it
+used before claimed no size or stride divisibility under cuTile 1.0's spec
+layout, which kept loads scalar (f16 matmul was 133 TFLOPS). rowsum measured
+2,441 GB/s in August; the August code and cuTile 0.3.2 rerun today on the
+same kind of node measure ~1,830, as current code does, so that difference
+is the node. Matmul tile shapes are NVIDIA-tuned; CDNA autotuning
+(`waves_per_eu`, `matrix_instr_nonkdim`, `kpack`) is the open lever. `mul!`
+on Float16 falls into GPUArrays' generic kernel on Julia 1.12
+(`generic_matmatmul_wrapper!`), an AMDGPU.jl bug.
 
 ## Workarounds and upstream findings
 
-triton 3.7.1:
+triton 3.8.0:
 
-- AMD tensor `atomic_cas` off the buffer-atomic path runs in every thread
-  holding a copy of an element; later copies return the first copy's update
-  and could reapply a CAS another program undid. Fixed in triton 3.8.0
-  (triton-lang/triton#9605). The emitter spreads tensor CAS
-  under 8,192 elements over max(1024, 2n) lanes: repeated pointers force one
-  element per thread, so every element has one owner.
 - AMD buffer-atomics lowering emits the nonexistent
   `llvm.amdgcn.raw.ptr.buffer.atomic.exch` (the real one is `*.swap`),
   breaking `atomic_xchg`; fixed by triton-lang/triton#11019 (release/3.9.x,
@@ -213,13 +213,15 @@ triton 3.7.1:
   Python frontend asserts K ≥ 32); int8 mma is emulated with an exact f32 dot.
 - tf32 descriptor matmuls are slower than pointer loads on sm_90.
 
-Upstream status (October 2026): triton 3.8.0 (on PyPI for CPython 3.14) has
-the CAS fix; the xchg fix, #11081 and dedicated `atomic_load`/`atomic_store`
-ops are in release/3.9.x (untagged). Moving to 3.8.0 needs the new tensor
-descriptor type syntax (`!tt.tensordesc<64x64xf16>`, #9851) and, on AMD, a
-global-scratch allocation (3.8 reports `global_scratch_size` there too).
-Still open upstream: AMD floor/ceil division, int8 dot K < 32 (no verifier
-check), `atomic_cas` masks.
+Fixed by moving from 3.7.1 to 3.8.0: AMD ran a tensor `atomic_cas` that
+missed the buffer-atomic path in every thread holding a copy of an element
+(later copies returned the first copy's update; triton-lang/triton#9605). 3.8
+also changed the tensor descriptor type syntax (`!tt.tensordesc<64x64xf16>`,
+#9851) and reports `global_scratch_size` on AMD, which the launchers now
+allocate for both vendors. The xchg fix, #11081 and dedicated
+`atomic_load`/`atomic_store` ops are in release/3.9.x (untagged); AMD
+floor/ceil division, int8 dot K < 32 (no verifier check) and `atomic_cas`
+masks are still open upstream.
 
 cuTile.jl 1.0.0, both overridden in `src/emitter.jl`:
 
