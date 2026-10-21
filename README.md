@@ -125,7 +125,8 @@ NULL global-scratch slot + profile scratch; `global_scratch_size` is
 absent from hip `KernelMetadata`), `warp_size=64` flows through
 `TargetInfo`, `num_stages` defaults to 2 (64KB LDS), and the TMA path is
 NVIDIA-only so `use_rocm!()` runs pointer loads everywhere.
-`use_rocm!()` also sets `AMDGCN_USE_BUFFER_ATOMICS=0`: triton 3.7.1's
+Every hip compile (launches and reflection alike) sets
+`AMDGCN_USE_BUFFER_ATOMICS=0`: triton 3.7.1's
 buffer-atomics lowering emits the nonexistent LLVM intrinsic
 `...raw.ptr.buffer.atomic.exch` (the real one is `*.swap`), killing every
 `atomic_xchg` at compile — worth an upstream issue.
@@ -134,8 +135,8 @@ The AMD backend also leaves tensor `arith.floordivsi`/`ceildivsi`/
 truncating divide plus a correction. And triton 3.7.1 runs an AMD tensor
 `atomic_cas` that misses the buffer-atomic path in every thread holding a copy
 of an element (fixed upstream in triton-lang/triton#11841, unreleased), so on
-AMD the emitter spreads each tensor CAS over 2,048 lanes, giving every
-element one owner.
+AMD the emitter spreads each tensor CAS under 8,192 elements over at least
+1,024 lanes, giving every element one owner.
 
 Reflection works for either vendor from any machine:
 `TritonRun.code_triton(f, argtypes; stage=:ttgir|:llir|:amdgcn,
