@@ -87,11 +87,11 @@ TritonRun.launch!(k, grid, rocarrays...)
 Validated on an MI300A (ROCm 7.2.4, cuTile 1.0.0; earlier rounds also under
 ROCm 6.4.2):
 
-- standalone suite 31/31 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
+- standalone suite 43/43 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
   test/runtests.jl`), including the tf32 matmuls — CDNA3's XF32 MFMA
   absorbs `inputPrecision=tf32` at tf32-like accuracy — and the >2³¹-element
   addressing tests;
-- **cuTile's own device suite: 1,873 pass / 4 fail / 18 error** through the
+- **cuTile's own device suite: 1,915 pass / 1 fail / 0 error** through the
   shim, file for file the CUDA run except one test: core.jl's failing
   assertion runs native cuTile on CUDA in a child process (the standalone
   suite checks the same through this backend, on both vendors). The compat
@@ -131,7 +131,16 @@ buffer-atomics lowering emits the nonexistent LLVM intrinsic
 `atomic_xchg` at compile — worth an upstream issue.
 The AMD backend also leaves tensor `arith.floordivsi`/`ceildivsi`/
 `ceildivui` unlowered (NVIDIA lowers them), so the emitter expands those to a
-truncating divide plus a correction.
+truncating divide plus a correction. And triton 3.7.1 runs an AMD tensor
+`atomic_cas` that misses the buffer-atomic path in every thread holding a copy
+of an element (fixed upstream in triton-lang/triton#11841, unreleased), so on
+AMD the emitter spreads each tensor CAS over 2,048 lanes, giving every
+element one owner.
+
+Reflection works for either vendor from any machine:
+`TritonRun.code_triton(f, argtypes; stage=:ttgir|:llir|:amdgcn,
+target=TritonRun.target(:amd))` compiles for gfx942 without an AMD GPU
+(`target(:nvidia)` with `:ptx`/`:sass` the other way).
 
 ## Notes
 

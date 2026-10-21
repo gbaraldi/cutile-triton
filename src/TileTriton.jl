@@ -9,7 +9,8 @@ experimentally, AMDGPU.jl through the package extension).
 Entry points:
 - `TritonRun.triton_kernel(f, argtypes; name)` / `TritonRun.launch!` —
   compile and launch a cuTile kernel through Triton.
-- `code_triton(f, argtypes; stage=:ttir|:ttgir|:llir|:ptx|:sass)` — reflection.
+- `code_triton(f, argtypes; stage=:ttir|:ttgir|:llir|:ptx|:sass|:amdgcn, target)` — reflection,
+  for either vendor from any machine (`target=TritonRun.target(:amd)`).
 - `install_shim!()` — route *all* cuTile compilation (`@cuda backend=cuTile`,
   `ct.launch`) through this backend, so unmodified cuTile code runs on it.
 - `set_target!(backend, arch, warp_size)` — override the compile target
