@@ -166,6 +166,14 @@ for (T, signed) in ((Int32, 1), (UInt32, 0), (Bool, 0))
     check("print isSigned=$signed for $T", occursin("isSigned = array<i32: $signed>", ttir))
 end
 
+# --- reflection for either vendor, without that vendor's GPU ----------------
+let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
+    reflect(stage, target) = (io = IOBuffer();
+        TritonRun.code_triton(io, vadd, tt; stage, target, name="vadd"); String(take!(io)))
+    check("AMDGCN reflection for gfx942", occursin("gfx942", reflect(:amdgcn, TritonRun.target(:amd))))
+    check("PTX reflection for sm_90", occursin(".target sm_90", reflect(:ptx, TritonRun.target(:nvidia))))
+end
+
 # --- TMA for 16-bit floats is only skipped before Hopper --------------------
 let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     target(sm) = TritonRun.TargetInfo("cuda", sm, 32, "cubin")

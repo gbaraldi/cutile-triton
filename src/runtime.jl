@@ -19,10 +19,24 @@ struct TargetInfo
     binkey::String
 end
 
+TargetInfo(backend, arch, warp_size) =
+    TargetInfo(backend, arch, warp_size, backend == "cuda" ? "cubin" : "hsaco")
+
+"""
+    TritonRun.target(:amd; arch="gfx942") / TritonRun.target(:nvidia; arch=90)
+
+A target to reflect for (`code_triton(...; target)`) without its GPU: the
+wheel compiles for either vendor offline.
+"""
+function target(vendor::Symbol; arch=nothing)
+    vendor === :amd && return TargetInfo("hip", something(arch, "gfx942"), 64)
+    vendor === :nvidia && return TargetInfo("cuda", something(arch, 90), 32)
+    throw(ArgumentError("target: vendor must be :amd or :nvidia, got :$vendor"))
+end
+
 const ACTIVE_TARGET = Ref{Union{Nothing,TargetInfo}}(nothing)
 set_target!(t::TargetInfo) = (ACTIVE_TARGET[] = t)
-set_target!(backend, arch, warp_size) =
-    set_target!(TargetInfo(backend, arch, warp_size, backend == "cuda" ? "cubin" : "hsaco"))
+set_target!(backend, arch, warp_size) = set_target!(TargetInfo(backend, arch, warp_size))
 
 function _default_target()
     t = ACTIVE_TARGET[]
@@ -89,11 +103,10 @@ _py_setenv!(k::String, v::String) = (pyimport("os").environ[k] = v; nothing)
 
 "Compile a TTIR string in-process; returns the triton CompiledKernel (Py)."
 function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int;
-                     occupancy::Union{Int,Nothing}=nothing)
+                     occupancy::Union{Int,Nothing}=nothing, t::TargetInfo=_default_target())
     tc, bc = _triton()
     path = joinpath(mktempdir(), "$name.ttir")
     write(path, ttir)
-    t = _default_target()
     target = bc.GPUTarget(t.backend, t.arch, t.warp_size)
     opts = Dict{String,Any}("num_warps" => num_warps, "num_stages" => num_stages)
     occupancy === nothing || merge!(opts, occupancy_options(occupancy, num_warps, t))
@@ -236,7 +249,7 @@ function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
 end
 
 # triton's own backend defaults: 3 pipeline stages on NVIDIA, 2 on AMD (64KB LDS)
-_default_stages() = _default_target().backend == "cuda" ? 3 : 2
+_default_stages(t::TargetInfo=_default_target()) = t.backend == "cuda" ? 3 : 2
 
 # Per-block dynamic shared memory limit of the current device (opt-in), or
 # nothing when the backend has no queryable limit.
@@ -394,23 +407,29 @@ function launch!(k::TritonKernel, grid, args...)
 end
 
 """
-    code_triton([io], f, argtypes; stage=:ttir, name="kernel",
-                num_warps=4, num_stages=backend default, use_tma=true)
+    code_triton([io], f, argtypes; stage=:ttir, name="kernel", num_warps=4,
+                num_stages=backend default, use_tma=true, target=active target)
 
 Reflection for the Triton backend, mirroring cuTile's `@device_code_*` family.
 `stage` is one of `:ttir` (as emitted), `:ttgir`, `:llir`, then `:ptx` and
-`:sass` on NVIDIA or `:amdgcn` on AMD.
+`:sass` on NVIDIA or `:amdgcn` on AMD. `target` picks the vendor to compile
+for, which needs no GPU of that vendor: `target=TritonRun.target(:amd)`
+shows the MI300A's code on any machine.
 """
 function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      stage::Symbol=:ttir, name::String="kernel",
-                     num_warps::Int=4, num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true)
-    use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
+                     num_warps::Int=4, num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
+                     target::TargetInfo=_default_target())
+    cuda = target.backend == "cuda"
+    use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
     ttir, _ = emit_ttir(f, argtypes; name, use_tma)
     if stage === :ttir
         print(io, ttir)
         return nothing
     end
-    k = _compile_py(ttir, name, num_warps, something(num_stages, _default_stages()))
+    stage in (:ptx, :sass) && !cuda && throw(ArgumentError("code_triton: :$stage is NVIDIA-only; use :amdgcn"))
+    stage === :amdgcn && cuda && throw(ArgumentError("code_triton: :amdgcn is AMD-only; use :ptx or :sass"))
+    k = _compile_py(ttir, name, num_warps, something(num_stages, _default_stages(target)); t=target)
     if stage === :sass
         cubin_path = joinpath(mktempdir(), "$name.cubin")
         write(cubin_path, pyconvert(Vector{UInt8}, k.asm["cubin"]))
