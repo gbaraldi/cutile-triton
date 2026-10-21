@@ -126,6 +126,16 @@ ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order
     ViewInfo(ptr, sizes, strides, elty, tile_shape, padding, contiguous, desc, order, tile_shape)
 view_step(view::ViewInfo, d::Int) = view.step === nothing ? view.tile_shape[d] : view.step[d]
 
+# A gather/scatter view: along `sparse_dim` the tile's coordinates are a 1-D
+# tile of element indices, along every other dim a scalar element start plus
+# the tile extent.
+struct GSViewInfo
+    base::ViewInfo        # the tensor view: ptr, sizes, strides
+    shape::Vector{Int}
+    sparse_dim::Int
+    padding::Symbol
+end
+
 # Number of tile origins along dim d, cld(size, step), as cuTile's native
 # index space counts them; a trailing window may be partial. The division
 # runs at the size's width (an Int64-indexed dim can exceed 2^31 elements);
@@ -495,6 +505,61 @@ function expand_to_full(offs1d::IR.Value, sh_julia::Vector{Int}, d::Int, et)
         cur_shape = newshape
     end
     return v1(tt.broadcast(cur; result=IR.TensorType(rev, et)))
+end
+
+"""
+Pointers and bounds mask (`nothing` without `check`) of a gather/scatter view
+access. The sparse coordinates are data, which no launch-time span check can
+bound, so the offsets are i64.
+"""
+function gs_ptrs_mask(view::GSViewInfo, idxs::Vector{Any}, check::Bool)
+    sh = view.shape
+    i64 = IR.Type(Int64)
+    full_t = IR.TensorType(reverse(sh), i64)
+    bt = IR.TensorType(reverse(sh), IR.Type(Bool))
+    zero_f = materialize(0, full_t)
+    offs = nothing
+    mask = nothing
+    for d in 1:length(sh)
+        S = sh[d]
+        idx = idxs[d]
+        coord = if d == view.sparse_dim
+            v = asvalue(idx)
+            tensor_elem(IR.type(v)) == i64 ? v :
+                v1(arith.extsi(v; out=IR.TensorType([S], i64)))
+        else
+            start = idx isa IR.Value ? as_int(idx, i64) : const_int(Int(idx), i64)
+            rng = v1(tt.make_range(; result=IR.TensorType([S], IR.Type(Int32)),
+                                   start=Int32(0), end_=Int32(S)))
+            v1(arith.addi(v1(tt.splat(start; result=IR.TensorType([S], i64))),
+                          v1(arith.extsi(rng; out=IR.TensorType([S], i64)));
+                          result=IR.TensorType([S], i64)))
+        end
+        c = expand_to_full(coord, sh, d, i64)
+        if check
+            size_d = view.base.sizes[d]
+            size_v = size_d isa IR.Value ? as_int(size_d, i64) : const_int(Int(size_d), i64)
+            m = v1(arith.cmpi(c, v1(tt.splat(size_v; result=full_t));
+                              predicate=IR.Attribute(Int64(2)), result=bt))   # slt
+            if d == view.sparse_dim   # dense starts are asserted non-negative
+                m = v1(arith.andi(m, v1(arith.cmpi(c, zero_f; predicate=IR.Attribute(Int64(5)),
+                                                   result=bt)); result=bt))   # sge
+            end
+            mask = mask === nothing ? m : v1(arith.andi(mask, m; result=bt))
+        end
+        stride_d = view.base.strides[d]
+        contrib = if stride_d isa Integer && stride_d == 1
+            c
+        else
+            st = stride_d isa IR.Value ? as_int(stride_d, i64) : const_int(Int(stride_d), i64)
+            v1(arith.muli(c, v1(tt.splat(st; result=full_t)); result=full_t))
+        end
+        offs = offs === nothing ? contrib : v1(arith.addi(offs, contrib; result=full_t))
+    end
+    ptr_t = IR.OpaqueType("tt", "ptr<" * string(storage_type(view.base.elty)) * ">")
+    ptrs_t = IR.TensorType(reverse(sh), ptr_t)
+    ptrs = v1(tt.addptr(v1(tt.splat(view.base.ptr; result=ptrs_t)), offs; result=ptrs_t))
+    return ptrs, mask
 end
 
 """
@@ -881,6 +946,8 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
             return obj[Int(key)]
         elseif obj isa Tuple
             return obj[Int(key)]
+        elseif isbits(obj)   # a constant-folded immutable, e.g. a UnitRange
+            return getfield(obj, key isa Symbol ? key : Int(key))
         end
         error("getfield: unhandled object $(typeof(obj))")
 
@@ -948,6 +1015,30 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         view = resolve(cg, args[1])::ViewInfo
         idxs = resolve(cg, args[4])
         return emit_view_load(view, Any[idxs...], cg)
+    elseif f === :make_gather_scatter_view
+        # (tensor_view, shape, sparse_dim, padding_mode)
+        pm = Symbol(resolve(cg, args[4]))
+        pad = pm === :Zero ? :zero : pm === :NegInf ? :neginf : :undetermined
+        return GSViewInfo(resolve(cg, args[1])::ViewInfo, Int[resolve(cg, args[2])...],
+                          Int(resolve(cg, args[3])), pad)
+    elseif f === :load_gather_scatter_view
+        # (view, latency, allow_tma, indices, check_bounds, order, scope[, token])
+        view = resolve(cg, args[1])::GSViewInfo
+        ptrs, mask = gs_ptrs_mask(view, Any[resolve(cg, args[4])...], resolve(cg, args[5]) !== false)
+        et = storage_type(view.base.elty)
+        res_t = tensor_of(view.shape, et)
+        pad = view.padding === :zero ? Base.zero(view.base.elty <: AbstractFloat ? Float64 : Int) :
+              view.padding === :neginf ? -Inf : nothing
+        loaded = mask === nothing || pad === nothing ? v1(tt.load(ptrs, mask; result=res_t)) :
+                 v1(tt.load(ptrs, mask; other=splat_const(view.shape, pad, et), result=res_t))
+        return view.base.elty === Bool ? to_register_i1(loaded) : loaded
+    elseif f === :store_gather_scatter_view
+        # (view, tile, latency, allow_tma, indices, check_bounds, order, scope[, token])
+        view = resolve(cg, args[1])::GSViewInfo
+        val = asvalue(resolve(cg, args[2]))
+        ptrs, mask = gs_ptrs_mask(view, Any[resolve(cg, args[5])...], resolve(cg, args[6]) !== false)
+        tt.store(ptrs, view.base.elty === Bool ? to_storage(val) : val, mask)
+        return nothing
     elseif f === :store_partition_view || f === :store_strided_view
         view = resolve(cg, args[1])::ViewInfo
         val = asvalue(resolve(cg, args[2]))

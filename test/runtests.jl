@@ -399,6 +399,22 @@ let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
           clusters || occursin("num_cta_in_cga", err((; num_ctas=2))))
 end
 
+# --- gather/scatter view: sparse indices outside the array read as padding ---
+function gather_neg(a, b)
+    rows = ct.arange(4; start=-1)          # rows -1, 0, 1, 2
+    ct.store(b, (1, 1), ct.load(@view(a[rows, :]), (4, 8); padding_mode=ct.PaddingMode.Zero))
+    return
+end
+
+let a = copyto!(GPU.zeros(Float32, 8, 8), reshape(Float32.(1:64), 8, 8))
+    k = TritonRun.triton_kernel(gather_neg, Tuple{TA2(Float32), TA2(Float32)}; name="gather_neg")
+    b = GPU.fill(-1f0, 4, 8)
+    TritonRun.launch!(k, 1, a, b)
+    GPU.synchronize()
+    want = [zeros(Float32, 2, 8); Array(a)[1:2, :]]
+    check("gather view masks negative sparse indices", Array(b) == want)
+end
+
 # --- candidate racing applies a read-modify-write kernel exactly once -------
 function accumulate!(acc, x, tile::Int)
     bid = ct.bid(1)
