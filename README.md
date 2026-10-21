@@ -32,9 +32,10 @@ atomics through views and masked `atomic_cas`, RNG, asserts and runtime
 throws, general loops, and launch hints. On H100, 8 of cuTile's 11 example
 workloads run at or above native tileiras (fft 3.0×, layernorm 2–2.5×,
 softmax 1.3–1.7×), MoE at 0.98× and fmha at 0.90×; batched matmul is about
-half as fast, where tileiras warp-specializes automatically. On MI300A, tile
-reductions and fusions are 10–13× faster than AMDGPU.jl's GPUArrays paths and
-matmul matches or beats rocBLAS.
+half as fast, where tileiras warp-specializes automatically. On MI300A,
+against AMDGPU.jl 2.9.1: softmax 4.5× and rowsum 1.3× faster than its
+GPUArrays paths, f32 matmul 1.12× rocBLAS; f16 matmul is at 0.75× rocBLAS
+and vadd at 0.94× a native kernel.
 
 ## Usage
 

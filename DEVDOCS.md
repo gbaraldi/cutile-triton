@@ -173,29 +173,31 @@ Hopper warp specialization is still immature upstream. f16 matmul 4096³
 through descriptors reached 541 TFLOPS at 128×256×64 (tileiras 447, cuBLAS
 512; August 2026).
 
-MI300A vs native AMDGPU.jl (`bench/rocm_compare.jl`, October 2026, ROCm
+MI300A vs native AMDGPU.jl 2.9.1 (`bench/rocm_compare.jl`, October 2026, ROCm
 7.2.4, cuTile 1.0.0, triton 3.8.0, untuned single tile shape):
 
-| workload | triton | native AMDGPU.jl |
-|---|---|---|
-| vadd 2²⁸ | 3,024 GB/s | 2,855 GB/s broadcast / 2,795 `@roc` |
-| rowsum 131072×512 | 1,839 GB/s | 191 GB/s (`sum!`, GPUArrays mapreduce) |
-| softmax 4096×16384 | 2,673 GB/s | 211 GB/s (GPUArrays composition) |
-| matmul f16 4096³ | 226.9 TFLOPS | 3.3 `mul!` (earlier run: 224.1 `gemm_ex`, 71.8 `gemm!`) |
-| matmul f32 4096³ | 63.2 TFLOPS | 54.1 rocBLAS |
+| workload | triton | native AMDGPU.jl | triton / native |
+|---|---|---|---|
+| vadd 2²⁸ | 2,981 GB/s | 3,179 GB/s `@roc` / 3,075 broadcast | 0.94× |
+| rowsum 131072×512 | 1,798 GB/s | 1,410 GB/s (`sum!`, GPUArrays mapreduce) | 1.28× |
+| softmax 4096×16384 | 2,580 GB/s | 572 GB/s (GPUArrays composition) | 4.5× |
+| matmul f16 4096³ | 219 TFLOPS | 292 TFLOPS (`mul!` → rocBLAS `gemm_ex`) | 0.75× |
+| matmul f32 4096³ | 63.5 TFLOPS | 56.8 TFLOPS (rocBLAS) | 1.12× |
 
-vadd is ahead of native, tile reductions and fusions are 10–13× ahead of
-GPUArrays, f32 matmul beats rocBLAS by 17%, and f16 matmul matches rocBLAS's
-tuned `gemm_ex` path. The benchmark builds its argument types from the actual
-arrays (`ct.TileArray`), as `ct.launch` does: the hand-written `ArraySpec`s it
-used before claimed no size or stride divisibility under cuTile 1.0's spec
-layout, which kept loads scalar (f16 matmul was 133 TFLOPS). rowsum measured
-2,441 GB/s in August; the August code and cuTile 0.3.2 rerun today on the
-same kind of node measure ~1,830, as current code does, so that difference
-is the node. Matmul tile shapes are NVIDIA-tuned; CDNA autotuning
-(`waves_per_eu`, `matrix_instr_nonkdim`, `kpack`) is the open lever. `mul!`
-on Float16 falls into GPUArrays' generic kernel on Julia 1.12
-(`generic_matmatmul_wrapper!`), an AMDGPU.jl bug.
+The native rows run with `ROCM_COMPARE=native` in an environment of their own:
+TileTriton's environment cannot have AMDGPU.jl ≥ 2.8, since MLIR.jl 0.3.0
+caps CEnum at 0.4 and AMDGPU.jl needs ≥ 0.5 (MLIR.jl#92 lifts the cap,
+unreleased). Against the AMDGPU.jl 2.7.3 that environment resolves, the
+baselines are far lower (`mul!` on Float16 3.3 TFLOPS before AMDGPU.jl#1049,
+`sum!` 194 GB/s, softmax 213 GB/s). The benchmark builds its argument types
+from the actual arrays (`ct.TileArray`), as `ct.launch` does: the
+hand-written `ArraySpec`s it used before claimed no size or stride
+divisibility under cuTile 1.0's spec layout, which kept loads scalar (f16
+matmul was 133 TFLOPS). rowsum measured 2,441 GB/s in August; the August code
+and cuTile 0.3.2 rerun today on the same kind of node measure ~1,830, as
+current code does, so that difference is the node. Matmul tile shapes are
+NVIDIA-tuned; CDNA autotuning (`waves_per_eu`, `matrix_instr_nonkdim`,
+`kpack`) is the open lever for f16.
 
 ## Workarounds and upstream findings
 

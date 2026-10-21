@@ -1,13 +1,20 @@
 # Head-to-head on ROCm: the Triton backend vs native AMDGPU.jl for the same
 # workloads — a hand-written @roc SIMT kernel / GPUArrays / rocBLAS, whichever
 # is the idiomatic native baseline. Prints RESULT rows like bench/examples.jl.
+# ROCM_COMPARE=native|triton|both picks the rows: the native ones need no
+# TileTriton, so they can run in an environment with a newer AMDGPU.jl than
+# TileTriton's dependencies allow.
+const MODE = get(ENV, "ROCM_COMPARE", "both")
+const TRITON = MODE != "native"
+const NATIVE = MODE != "triton"
 using AMDGPU
 using LinearAlgebra
-using TileTriton
-using TileTriton.TritonRun
-import cuTile as ct
-
-TileTriton.use_rocm!()
+@static if TRITON
+    using TileTriton
+    using TileTriton.TritonRun
+    import cuTile as ct
+    TileTriton.use_rocm!()
+end
 
 # argument types as ct.launch derives them from the actual arrays: their
 # ArraySpec (alignment, size and stride divisibility) is what lets loads
@@ -46,12 +53,15 @@ let n = 1 << 28, tile = 2048
     a = AMDGPU.rand(Float32, n); b = AMDGPU.rand(Float32, n); c = AMDGPU.zeros(Float32, n)
     gbs(t) = string(round(Int, 3 * n * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(vadd, Tuple{tatype(a), tatype(b), tatype(c),
-                                            ct.Constant{Int, tile}}; name="vadd", num_warps=4)
-    TritonRun.launch!(k, cld(n, tile), a, b, c); AMDGPU.synchronize()
-    @assert Array(c[1:1000]) ≈ Array(a[1:1000]) .+ Array(b[1:1000])
-    t = timeit(() -> TritonRun.launch!(k, cld(n, tile), a, b, c))
-    row("vadd", "triton", t, gbs(t))
+    if TRITON
+        k = TritonRun.triton_kernel(vadd, Tuple{tatype(a), tatype(b), tatype(c),
+                                                ct.Constant{Int, tile}}; name="vadd", num_warps=4)
+        TritonRun.launch!(k, cld(n, tile), a, b, c); AMDGPU.synchronize()
+        @assert Array(c[1:1000]) ≈ Array(a[1:1000]) .+ Array(b[1:1000])
+        t = timeit(() -> TritonRun.launch!(k, cld(n, tile), a, b, c))
+        row("vadd", "triton", t, gbs(t))
+    end
+    NATIVE || return
 
     fill!(c, 0)
     groups = cld(n, 256)
@@ -77,13 +87,16 @@ let m = 131072, n = 512, tm = 32, tn = 512
     out = AMDGPU.zeros(Float32, m, 1)
     gbs(t) = string(round(Int, m * n * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(rowsum, Tuple{tatype(a), tatype(out),
-                                              ct.Constant{Int, tm}, ct.Constant{Int, tn}};
-                                name="rowsum", num_warps=4)
-    TritonRun.launch!(k, cld(m, tm), a, out); AMDGPU.synchronize()
-    @assert Array(out) ≈ sum(Array(a); dims=2)
-    t = timeit(() -> TritonRun.launch!(k, cld(m, tm), a, out))
-    row("rowsum", "triton", t, gbs(t))
+    if TRITON
+        k = TritonRun.triton_kernel(rowsum, Tuple{tatype(a), tatype(out),
+                                                  ct.Constant{Int, tm}, ct.Constant{Int, tn}};
+                                    name="rowsum", num_warps=4)
+        TritonRun.launch!(k, cld(m, tm), a, out); AMDGPU.synchronize()
+        @assert Array(out) ≈ sum(Array(a); dims=2)
+        t = timeit(() -> TritonRun.launch!(k, cld(m, tm), a, out))
+        row("rowsum", "triton", t, gbs(t))
+    end
+    NATIVE || return
 
     t = timeit(() -> sum!(out, a))
     row("rowsum", "GPUArrays sum!", t, gbs(t))
@@ -113,15 +126,18 @@ let n = 4096, m = 16384, tile = 4096
     tmp = AMDGPU.zeros(Float32, 1, m)
     gbs(t) = string(round(Int, 2 * n * m * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(softmax, Tuple{tatype(y), tatype(x),
-                                               ct.Constant{Int, tile}};
-                                name="softmax", num_warps=4)
-    grid = 1024
-    TritonRun.launch!(k, grid, y, x); AMDGPU.synchronize()
     xh = Array(x); eh = exp.(xh .- maximum(xh; dims=1))
-    @assert Array(y) ≈ eh ./ sum(eh; dims=1)
-    t = timeit(() -> TritonRun.launch!(k, grid, y, x))
-    row("softmax", "triton", t, gbs(t))
+    if TRITON
+        k = TritonRun.triton_kernel(softmax, Tuple{tatype(y), tatype(x),
+                                                   ct.Constant{Int, tile}};
+                                    name="softmax", num_warps=4)
+        grid = 1024
+        TritonRun.launch!(k, grid, y, x); AMDGPU.synchronize()
+        @assert Array(y) ≈ eh ./ sum(eh; dims=1)
+        t = timeit(() -> TritonRun.launch!(k, grid, y, x))
+        row("softmax", "triton", t, gbs(t))
+    end
+    NATIVE || return
 
     native! = () -> begin
         maximum!(tmp, x)
@@ -155,12 +171,15 @@ for (T, label) in ((Float16, "matmul-f16"), (Float32, "matmul-f32"))
     A = AMDGPU.rand(T, M, K); B = AMDGPU.rand(T, K, N); C = AMDGPU.zeros(T, M, N)
     tflops(t) = string(round(2M * N * K / t / 1e12; digits=1), " TFLOPS")
 
-    k = TritonRun.triton_kernel(matmul, Tuple{tatype(A), tatype(B), tatype(C),
-                                              ct.Constant{Int, tm}, ct.Constant{Int, tn},
-                                              ct.Constant{Int, tk}};
-                                name="matmul", num_warps=8)
-    t = timeit(() -> TritonRun.launch!(k, (cld(M, tm), cld(N, tn)), A, B, C))
-    row(label, "triton", t, tflops(t))
+    if TRITON
+        k = TritonRun.triton_kernel(matmul, Tuple{tatype(A), tatype(B), tatype(C),
+                                                  ct.Constant{Int, tm}, ct.Constant{Int, tn},
+                                                  ct.Constant{Int, tk}};
+                                    name="matmul", num_warps=8)
+        t = timeit(() -> TritonRun.launch!(k, (cld(M, tm), cld(N, tn)), A, B, C))
+        row(label, "triton", t, tflops(t))
+    end
+    NATIVE || continue
 
     try
         t = timeit(() -> mul!(C, A, B))
