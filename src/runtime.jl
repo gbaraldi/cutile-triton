@@ -34,6 +34,9 @@ function target(vendor::Symbol; arch=nothing)
     throw(ArgumentError("target: vendor must be :amd or :nvidia, got :$vendor"))
 end
 
+"The target's vendor as the emitter names it."
+vendor(t::TargetInfo=_default_target()) = t.backend == "cuda" ? :nvidia : :amd
+
 const ACTIVE_TARGET = Ref{Union{Nothing,TargetInfo}}(nothing)
 set_target!(t::TargetInfo) = (ACTIVE_TARGET[] = t)
 set_target!(backend, arch, warp_size) = set_target!(TargetInfo(backend, arch, warp_size))
@@ -212,7 +215,7 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, vendor=vendor())
     h = resolve_hints(hints, meta.kernel_meta)
     pin(ws) = h.num_worker_warps === nothing ? ws : (h.num_worker_warps,)
     if !meta.has_dot
@@ -224,7 +227,7 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
     # × warps (unique TTIRs only; e.g. TMA-ineligible kernels dedupe)
     variants = [(ttir, meta.spans)]
     for hints in (true, false)
-        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets)
+        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets, vendor=vendor())
         any(v -> first(v) == t, variants) || push!(variants, (t, m.spans))
     end
     return [compile_kernel(t, argspec; name, num_warps=w, spans, h.occupancy)
@@ -237,7 +240,7 @@ function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        wide_offsets::Bool=false, hints=(;))
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, vendor=vendor())
     h = resolve_hints(hints, meta.kernel_meta)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
@@ -422,7 +425,7 @@ function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      target::TargetInfo=_default_target())
     cuda = target.backend == "cuda"
     use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
-    ttir, _ = emit_ttir(f, argtypes; name, use_tma)
+    ttir, _ = emit_ttir(f, argtypes; name, use_tma, vendor=vendor(target))
     if stage === :ttir
         print(io, ttir)
         return nothing
