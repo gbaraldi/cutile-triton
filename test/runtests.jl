@@ -538,6 +538,11 @@ function xchg_tile(arr, out)
     ct.scatter(out, indices, ct.atomic_xchg(arr, indices, Int32(3)))
     return
 end
+function copy2d_i16(dst, src)
+    i = ct.bid(1); j = ct.bid(2)
+    ct.store(dst; index=(i, j), tile=ct.load(src; index=(i, j), shape=(64, 64)))
+    return
+end
 function cas_f16(arr, out)
     indices = ct.arange(16; dtype=Int32)
     ct.scatter(out, indices, ct.atomic_cas(arr, indices, Float16(0), Float16(1)))
@@ -551,6 +556,10 @@ let amd = TritonRun.target(:amd)
     check("AMD reflection of an f16 CAS",
           occursin("gfx942", reflect(cas_f16, Tuple{TA1(Float16), TA1(Float16)}; stage=:amdgcn, target=amd)))
     check("RDNA targets are wave32", TritonRun.target(:amd; arch="gfx1100").warp_size == 32)
+    # tensor descriptors before sm_90 need make_ttir's descriptor-to-pointer rewrite
+    check("sm_80 compiles tensor descriptors",
+          occursin(".target sm_80", reflect(copy2d_i16, Tuple{TA2(Int16), TA2(Int16)}; stage=:ptx,
+                                            target=TritonRun.target(:nvidia; arch=80))))
     tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     check("reflection follows launch hints",
           occursin("\"ttg.num-warps\" = 8", reflect(vadd, tt; stage=:ttgir, hints=(; num_worker_warps=8))))

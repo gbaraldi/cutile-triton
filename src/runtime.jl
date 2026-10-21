@@ -108,6 +108,38 @@ end
 # knobs read through it, so backend workarounds must set it there, not ENV.
 _py_setenv!(k::String, v::String) = (pyimport("os").environ[k] = v; nothing)
 
+# triton.compile starts an IR file after that file's own stage, so a .ttir
+# input skips make_ttir (inliner, canonicalize, combine, CSE, loop unroll, and
+# before sm_90 the descriptor-to-pointer rewrite). Run that stage first, as
+# for a Python kernel; the result is a .ttir again, which compile then takes
+# as is.
+const _py_make_ttir = Ref{Py}()
+const MAKE_TTIR = Ref(get(ENV, "TILETRITON_MAKE_TTIR", "1") != "0")
+
+function _make_ttir(path::String, target, opts)
+    if !isassigned(_py_make_ttir)
+        g = pydict()
+        pyexec("""
+        def make_ttir(path, target, opts):
+            from triton.compiler.compiler import IRSource, make_backend
+            from triton._C.libtriton import ir
+            backend = make_backend(target)
+            context = ir.context()
+            ir.load_dialects(context)
+            backend.load_dialects(context)
+            src = IRSource(path, context, backend)
+            options = backend.parse_options(dict(opts, **src.parse_options()))
+            module = src.make_ir(target, options, backend.get_codegen_implementation(options),
+                                 backend.get_module_map(), context)
+            stages = dict()
+            backend.add_stages(stages, options, src.language)
+            return str(stages["ttir"](module, {}))
+        """, g)
+        _py_make_ttir[] = g["make_ttir"]
+    end
+    return pyconvert(String, _py_make_ttir[](path, target, opts))
+end
+
 "Compile a TTIR string in-process; returns the triton CompiledKernel (Py)."
 function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int;
                      occupancy::Union{Int,Nothing}=nothing, t::TargetInfo=_default_target())
@@ -123,6 +155,7 @@ function _compile_py(ttir::String, name::String, num_warps::Int, num_stages::Int
     occupancy === nothing || merge!(opts, occupancy_options(occupancy, num_warps, t))
     opts = pydict(opts)
     try
+        MAKE_TTIR[] && write(path, _make_ttir(path, target, opts))
         return tc.compile(path; target=target, options=opts)
     catch e
         e isa PyException || rethrow()
