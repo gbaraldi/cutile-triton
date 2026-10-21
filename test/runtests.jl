@@ -271,8 +271,54 @@ let ncol = 2^27 + 64   # Int32-indexed, but 16 × ncol = 2^31 + 1024 elements
         TritonRun.launch!(k, 1, out, a, Int32(cld(ncol, 64)))
         GPU.synchronize()
         check("pointer offsets beyond 2^31 elements (Int32-indexed)", all(==(Int8(7)), Array(out)))
+        check("small in-tile span keeps the i32-offset build", k.wide[] === nothing)
     end
     a = nothing; GC.gc()
+end
+
+function first_tile(out, a)
+    ct.store(out; index=(Int32(1), Int32(1)), tile=ct.load(a; index=(Int32(1), Int32(1)), shape=(16, 64)))
+    return
+end
+
+# Int32-indexed and tall-skinny: one 16 × 64 tile spans 63 × m > 2^31 elements
+let m = 2^25 + 2^20, n = 64
+    a = try_alloc(Int8, m, n)
+    if a !== nothing
+        a[1:16, n] .= Int8(7)
+        k = TritonRun.triton_kernel(first_tile, Tuple{TA2(Int8), TA2(Int8)};
+                                    name="first_tile", use_tma=false)
+        out = GPU.zeros(Int8, 16, 64)
+        TritonRun.launch!(k, 1, out, GPU.zeros(Int8, 16, 64))
+        check("in-tile span within i32 launches the i32-offset build", k.wide[] === nothing)
+        TritonRun.launch!(k, 1, out, a)
+        GPU.synchronize()
+        h = Array(out)
+        check("in-tile span beyond 2^31 launches the i64-offset build",
+              k.wide[] !== nothing && all(==(Int8(7)), h[:, n]) && all(iszero, h[:, 1:n-1]))
+    end
+    a = nothing; GC.gc()
+end
+
+function last_window(out, a, j::Int32)
+    src = ct.eachtile(a, (4,); step=(3,), padding_mode=ct.PaddingMode.Zero)
+    ct.store(out; index=Int32(1), tile=src[j])
+    return
+end
+
+# length typemax(Int32), windows of 4 every 3: the last one starts at len - 1,
+# so its bounds check counts past 2^31 (the bytes beyond `len` hold a sentinel)
+let len = Int(typemax(Int32))
+    buf = try_alloc(Int8, len + 16)
+    if buf !== nothing
+        fill!(buf, Int8(9)); buf[len:len] .= Int8(7)
+        k = TritonRun.triton_kernel(last_window, Tuple{TA1(Int8), TA1(Int8), Int32}; name="last_window")
+        out = GPU.fill(Int8(-1), 4)
+        TritonRun.launch!(k, 1, out, view(buf, 1:len), Int32(cld(len, 3)))
+        GPU.synchronize()
+        check("bounds check of a window ending past 2^31", Array(out) == Int8[7, 0, 0, 0])
+    end
+    buf = nothing; GC.gc()
 end
 
 # --- candidate racing applies a read-modify-write kernel exactly once -------

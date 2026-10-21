@@ -141,6 +141,10 @@ end
 # legality still gates it; this is the opt-out).
 const USE_TMA = Ref(true)
 
+# Kernel-creation-time switch: in-tile offsets of every view at i64, for the
+# launches whose spans (see `SpanTerm`) do not fit i32.
+const WIDE_OFFSETS = Ref(false)
+
 # TMA legality for a partition view: 2-D, unit-stride inner dim, box dims
 # within CUtensorMap's 256-element limit, ≥16-byte inner box (hardware
 # minimum — a 4-byte inner box traps the GPU). OOB zero-fill covers :zero
@@ -213,6 +217,22 @@ ArgSpec(kind, elty, ndims) = ArgSpec(kind, elty, ndims, Int32)
 tilearray_indextype(@nospecialize(T)) =
     (T isa DataType && length(T.parameters) >= 3 && T.parameters[3] isa Type) ? T.parameters[3] : Int32
 
+"""
+One dimension of a pointer-path view whose in-tile offsets are i32: the tile
+extent and origin step along it, and where its size and stride come from at
+launch (an ABI parameter slot, or 0 for the constant beside it). The launcher
+bounds the largest in-tile offset, sum((min(extent, size) - 1) * |stride|),
+and the bounds check's last origin + extent with these.
+"""
+struct SpanTerm
+    extent::Int
+    step::Int
+    size_slot::Int
+    size::Int
+    stride_slot::Int
+    stride::Int
+end
+
 "KernelState handle: carries the implicit trailing seed parameter."
 struct KSVal
     seed::IR.Value
@@ -226,8 +246,11 @@ mutable struct CG
     seed::Union{Nothing,IR.Value}      # implicit KernelState seed param
     has_dot::Bool                      # kernel contains tt.dot (schedule heuristic)
     has_atomic::Bool                   # kernel contains atomics (autotune safety)
+    params::Vector{IR.Value}           # entry block arguments, in ABI order
+    spans::Vector{Vector{SpanTerm}}    # per i32-offset view, for the launch check
 end
-CG() = CG(Dict{Int,Any}(), Dict{Int,Any}(), Dict{Int,Any}(), Dict{Int,Any}(), nothing, false, false)
+CG() = CG(Dict{Int,Any}(), Dict{Int,Any}(), Dict{Int,Any}(), Dict{Int,Any}(), nothing, false, false,
+          IR.Value[], Vector{SpanTerm}[])
 
 "Julia eltype of an SSA operand, when tracked (signless MLIR needs this)."
 function jl_eltype(cg::CG, @nospecialize(x), default::DataType)
@@ -365,15 +388,37 @@ const_int(x::Integer, ty) = ty == IR.Type(Int32) ? const_i32(Int(x)) : const_sca
 Offset type for a view's in-tile pointer arithmetic: i64 when any size/stride
 is a 64-bit Value or a constant beyond Int32 (an Int64-indexed TileArray),
 else i32. The tile origin goes into the base pointer at 64 bits (see
-`view_ptrs_mask`), so only the span of one tile has to fit this type.
+`view_ptrs_mask`), so only the span of one tile has to fit this type; the
+launcher checks that it does (`SpanTerm`) and otherwise runs a build with
+`WIDE_OFFSETS`.
 """
 function view_offs_type(view::ViewInfo)
     i64 = IR.Type(Int64)
+    WIDE_OFFSETS[] && return i64
     for xs in (view.sizes, view.strides), x in xs
         x isa IR.Value && IR.type(x) == i64 && return i64
         x isa Integer && abs(Int(x)) > typemax(Int32) && return i64
     end
     return IR.Type(Int32)
+end
+
+"""
+Record the span of a view about to use i32 in-tile offsets, for the launch
+check. Returns false when a size or stride is neither a kernel parameter nor
+a constant, so the check could not evaluate it; the view then uses i64.
+"""
+function record_span!(cg::CG, view::ViewInfo)
+    source(x) = x isa Integer ? (0, Int(x)) :
+        let i = findfirst(==(x), cg.params); i === nothing ? nothing : (i, 0) end
+    terms = SpanTerm[]
+    for d in 1:length(view.tile_shape)
+        ad = view.order === nothing ? d : view.order[d]
+        sz = source(view.sizes[ad]); st = source(view.strides[ad])
+        (sz === nothing || st === nothing) && return false
+        push!(terms, SpanTerm(view.tile_shape[d], view_step(view, d), sz..., st...))
+    end
+    terms in cg.spans || push!(cg.spans, terms)
+    return true
 end
 
 "Materialize an env value as an IR.Value of type `ty` (used for constants)."
@@ -484,6 +529,7 @@ function view_ptrs_mask(view::ViewInfo, idxs::Vector{Any}, cg::CG)
     N = length(sh)
     i32 = IR.Type(Int32)
     ot = view_offs_type(view)
+    ot == i32 && !record_span!(cg, view) && (ot = IR.Type(Int64))
     et = storage_type(view.elty)
     ptr_t = IR.OpaqueType("tt", "ptr<" * string(et) * ">")
 
@@ -1893,8 +1939,10 @@ Lower a cuTile kernel to Triton IR text plus the flattened parameter spec
 the launcher needs.
 """
 function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kernel",
-                   use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing)
+                   use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing,
+                   wide_offsets::Bool=false)
     USE_TMA[] = use_tma
+    WIDE_OFFSETS[] = wide_offsets
     h = hints !== nothing ? hints : get(ENV, "TRITON_ARG_ATTRS", "1") != "0"
     EMIT_DIV_ATTRS[] = h
     EMIT_CONST_STRIDE[] = hints !== nothing ? hints :
@@ -1908,6 +1956,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
     text = ""
     hasdot = false
     hasatomic = false
+    spans = Vector{SpanTerm}[]
     argspec = ArgSpec[]
     try
         IR.allow_unregistered_dialects!(true)
@@ -1937,6 +1986,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
         push!(reg, entry)
 
         cg = CG()
+        append!(cg.params, IR.argument(entry, i) for i in 1:length(param_types))
         # Wire params back to Julia slots.
         kref = Ref(0)
         for (i, AT) in enumerate(sci.argtypes)
@@ -1970,10 +2020,11 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
         text = string(mod)
         hasdot = cg.has_dot
         hasatomic = cg.has_atomic
+        spans = cg.spans
     finally
         IR.deactivate(ctx)
     end
-    return text, argspec, (; has_dot=hasdot, has_atomic=hasatomic)
+    return text, argspec, (; has_dot=hasdot, has_atomic=hasatomic, spans)
 end
 
 end # module

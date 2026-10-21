@@ -38,9 +38,10 @@ Triton exists.
   NegInf padding is recovered via `select(mask, tma_load, -inf)`.
 - **Index width**: loops run at the range's integer width, and each tile's
   origin is added to the base pointer at 64 bits, so arrays beyond 2³¹
-  elements address correctly while in-tile offsets stay i32. Remaining limit:
-  an Int32-indexed view whose span within one tile reaches 2³¹ elements
-  (a stride of ~8.4M with 256-wide tiles along that dim).
+  elements address correctly while in-tile offsets stay i32. A tile can
+  still span more than 2³¹ elements (e.g. 16×64 over a 34.6M×64 array), so,
+  like CUDA.jl's index narrowing (JuliaGPU/CUDA.jl#3389), each launch checks
+  the actual sizes and strides and runs an i64-offset build when they need it.
 
 ## Layout
 

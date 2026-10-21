@@ -5,7 +5,7 @@ module TritonRun
 
 using CUDA
 using PythonCall
-using ..TritonEmitter: emit_ttir, ArgSpec
+using ..TritonEmitter: emit_ttir, ArgSpec, SpanTerm
 import cuTile as ct
 
 export triton_kernel, launch!, code_triton, set_target!
@@ -114,6 +114,9 @@ struct TritonKernel
     argspec::Vector{ArgSpec}
     ttir::String
     abi_types::Vector{Any}   # flattened ABI parameter types, fixed per kernel
+    spans::Vector{Vector{SpanTerm}}  # i32-offset views, checked at launch (`spans_fit`)
+    widen::Any               # () -> this kernel with i64 in-tile offsets, or nothing
+    wide::Base.RefValue{Any} # that build, once a launch has needed it
 end
 
 function jint(md, key, default)
@@ -156,33 +159,38 @@ function tma_eligible(@nospecialize(argtypes), target::TargetInfo=_default_targe
 end
 
 function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
-                                  name::String, use_tma::Bool=true)
+                                  name::String, use_tma::Bool=true, wide_offsets::Bool=false)
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma)
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
     if !meta.has_dot
-        return [compile_kernel(ttir, argspec; name, num_warps=w) for w in (4, 8)]
+        return [compile_kernel(ttir, argspec; name, num_warps=w, meta.spans) for w in (4, 8)]
     end
     # dot kernels: TMA-vs-pointer and argument hints both interact with the
     # tensor-core pipeline in shape-dependent ways — race load style × hints
     # × warps (unique TTIRs only; e.g. TMA-ineligible kernels dedupe)
-    variants = unique([ttir,
-                       emit_ttir(f, argtypes; name, use_tma=false, hints=true)[1],
-                       emit_ttir(f, argtypes; name, use_tma=false, hints=false)[1]])
-    return [compile_kernel(t, argspec; name, num_warps=w)
-            for t in variants for w in (8, 4)]
+    variants = [(ttir, meta.spans)]
+    for hints in (true, false)
+        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets)
+        any(v -> first(v) == t, variants) || push!(variants, (t, m.spans))
+    end
+    return [compile_kernel(t, argspec; name, num_warps=w, spans)
+            for (t, spans) in variants for w in (8, 4)]
 end
 
 function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        name::String, num_warps::Union{Int,Nothing}=nothing,
-                       num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true)
+                       num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
+                       wide_offsets::Bool=false)
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma)
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
     num_warps = num_warps !== nothing ? num_warps : (meta.has_dot ? 8 : 4)
-    return compile_kernel(ttir, argspec; name, num_warps, num_stages)
+    widen = () -> triton_kernel(f, argtypes; name, num_warps, num_stages, use_tma,
+                                wide_offsets=true)
+    return compile_kernel(ttir, argspec; name, num_warps, num_stages, meta.spans, widen)
 end
 
 # triton's own backend defaults: 3 pipeline stages on NVIDIA, 2 on AMD (64KB LDS)
@@ -195,7 +203,8 @@ _shared_limit() = _default_target().backend == "cuda" ?
                    CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN) : nothing
 
 function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
-                        num_stages::Union{Int,Nothing}=nothing)
+                        num_stages::Union{Int,Nothing}=nothing,
+                        spans::Vector{Vector{SpanTerm}}=Vector{SpanTerm}[], widen=nothing)
     explicit_stages = num_stages !== nothing
     num_stages = something(num_stages, _default_stages())
     if haskey(ENV, "TRITON_DUMP_TTIR")
@@ -229,7 +238,38 @@ function compile_kernel(ttir::String, argspec; name::String, num_warps::Int,
                 attrs[CUDA.FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES], "\tshared=$shared")
     end
     return TritonKernel(fun, mod, name, num_warps, warp_size, shared, gss, argspec, ttir,
-                        abi_types(argspec))
+                        abi_types(argspec), spans, widen, Ref{Any}(nothing))
+end
+
+"""
+Whether every i32-offset view stays within i32 for these ABI values (in
+`abi_types` order): its largest in-tile offset, and the bounds check's last
+tile origin + extent along each dim (which only reaches past 2^31 - 1 for
+strided views: partition origins are multiples of a power-of-2 extent).
+"""
+function spans_fit(spans::Vector{Vector{SpanTerm}}, vals)
+    lim = Int(typemax(Int32))
+    for terms in spans
+        span = 0
+        for t in terms
+            # slots hold the sizes and strides of Int32-indexed arrays
+            n = t.size_slot == 0 ? t.size : Int(vals[t.size_slot]::Int32)
+            stride = t.stride_slot == 0 ? t.stride : Int(vals[t.stride_slot]::Int32)
+            (cld(n, t.step) - 1) * t.step + t.extent - 1 > lim && return false
+            span += (clamp(n, 1, t.extent) - 1) * abs(stride)
+        end
+        span > lim && return false
+    end
+    return true
+end
+
+"The i64-offset build of `k`, compiled on first use."
+function wide_kernel(k::TritonKernel)
+    k.widen === nothing &&
+        error("kernel $(k.name): in-tile offsets exceed 32 bits for these arguments; " *
+              "build it with `triton_kernel(...; wide_offsets=true)`")
+    k.wide[] === nothing && (k.wide[] = k.widen())
+    return k.wide[]::TritonKernel
 end
 
 # Flatten runtime arguments to the kernel ABI: TileArray → (ptr, sizes..., strides...).
@@ -292,6 +332,7 @@ arguments in order, skipping `ct.Constant` slots.
 """
 function launch!(k::TritonKernel, grid, args...)
     vals = flatten_vals(k.argspec, args)
+    spans_fit(k.spans, vals) || (k = wide_kernel(k))
     types = k.abi_types
     g = grid isa Integer ? (Int(grid), 1, 1) : (length(grid) == 2 ? (grid[1], grid[2], 1) : grid)
     # TMA descriptors are built in global scratch memory; size it like

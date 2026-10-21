@@ -14,25 +14,29 @@ mutable struct ShimKernel{F, TT} <: AbstractKernel{F, TT}
     # ABI parameter types of the flattened arguments (plus the trailing seed
     # and scratch pointers), fixed per specialization; filled on first launch
     abi_types::Union{Nothing, Vector{Any}}
+    spans::Vector{Vector{TritonEmitter.SpanTerm}}  # every candidate's, checked per launch
+    wide::Any            # the i64-offset ShimKernel, once a launch has needed it
 end
-ShimKernel{F, TT}(cands, chosen, f) where {F, TT} = ShimKernel{F, TT}(cands, chosen, f, nothing)
+ShimKernel{F, TT}(cands, chosen, f) where {F, TT} =
+    ShimKernel{F, TT}(cands, chosen, f, nothing, unique(reduce(vcat, (c.spans for c in cands))), nothing)
 
 const KERNEL_CACHE = Dict{Any, Any}()
 
 sanitize(s) = (n = replace(s, r"[^A-Za-z0-9_]" => "_"); isempty(n) || isdigit(n[1]) ? "k_" * n : n)
 
-function get_kernel(@nospecialize(f), @nospecialize(tt))
+function get_kernel(@nospecialize(f), @nospecialize(tt); wide_offsets::Bool=false)
     # world counter in the key: method redefinition invalidates (cuTile rides
     # CodeInstance caching for this; a Dict is enough for the harness)
-    key = (f, tt, Base.get_world_counter())
+    key = (f, tt, Base.get_world_counter(), wide_offsets)
     haskey(KERNEL_CACHE, key) && return KERNEL_CACHE[key]
     name = sanitize(string(nameof(typeof(f))))
     # TMA off for the coverage run: legality hardening (min box bytes, stride
     # divisibility) is orthogonal to intrinsic coverage.
     cands = if haskey(ENV, "TRITON_NUM_WARPS")
-        [TritonRun.triton_kernel(f, tt; name, num_warps=parse(Int, ENV["TRITON_NUM_WARPS"]))]
+        [TritonRun.triton_kernel(f, tt; name, num_warps=parse(Int, ENV["TRITON_NUM_WARPS"]),
+                                 wide_offsets)]
     else
-        TritonRun.triton_kernel_candidates(f, tt; name)
+        TritonRun.triton_kernel_candidates(f, tt; name, wide_offsets)
     end
     k = ShimKernel{typeof(f), tt}(cands, length(cands) == 1 ? 1 : 0, f)
     KERNEL_CACHE[key] = k
@@ -156,7 +160,8 @@ end
     end
 end
 
-function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwargs...)
+function (k::ShimKernel{F, TT})(args...; blocks=1, threads=1, convert=Val(false),
+                                kwargs...) where {F, TT}
     cuda = _iscuda()
     PT = cuda ? CuPtr{Cvoid} : Ptr{Cvoid}
     NULLP = cuda ? CU_NULL : Ptr{Cvoid}(0)
@@ -173,6 +178,11 @@ function (k::ShimKernel)(args...; blocks=1, threads=1, convert=Val(false), kwarg
     types = k.abi_types
     leaves = flatten_leaves(args, Val(cuda))
     vals = Any[leaves..., Base.rand(UInt32), NULLP, NULLP]
+    if !TritonRun.spans_fit(k.spans, vals)
+        # some view's in-tile offsets would overflow i32 for these arguments
+        k.wide === nothing && (k.wide = get_kernel(k.f, TT; wide_offsets=true))
+        return k.wide(args...; blocks, threads, convert, kwargs...)
+    end
     length(vals) == length(types) ||
         error("kernel argument flattening produced $(length(vals)) values for $(length(types)) ABI slots")
     g = blocks isa Integer ? (Int(blocks), 1, 1) :
