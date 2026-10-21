@@ -8,12 +8,38 @@ using TileTriton
 using TileTriton.TritonRun: TritonRun, set_target!, _load_module, _raw_launch, _sync,
                             _dev_alloc, _dev_copy
 import cuTile
+import Random
 
 # cuTile's generic TileArray(arr) refuses plain-`Ptr` arrays as a host-memory
 # guard; ROCArray hands out plain `Ptr` for device memory (HIP unified
-# addressing), so identify it explicitly. This is what lets unmodified cuTile
-# launches (`cuTile.launch`, the test suite) run on ROCm through the shim.
-cuTile.device_pointer(arr::ROCArray{T}) where {T} = pointer(arr)
+# addressing), so identify it, and its views and wrappers, explicitly. This is
+# what lets unmodified cuTile launches (`cuTile.launch`, the test suite) run
+# on ROCm through the shim. `use_rocm!` extends the guard to other arrays.
+cuTile.device_pointer(arr::AMDGPU.AnyROCArray{T}) where {T} = Ptr{T}(pointer(arr))
+
+function _is_device_memory(ptr::Ptr)
+    try
+        AMDGPU.Mem.attributes(ptr).type == AMDGPU.HIP.hipMemoryTypeDevice
+    catch
+        false   # not memory HIP knows about
+    end
+end
+
+# cuTile's host RNG API is written against CuArray; the same fills for
+# ROCArray (mirroring cuTile's methods, counter accounting included).
+for (f!, kernel, Ts) in ((:rand!, :rand_fill_kernel, :RandTypes),
+                         (:randn!, :randn_fill_kernel, :RandnTypes),
+                         (:randexp!, :randexp_fill_kernel, :RandnTypes))
+    @eval function Random.$f!(rng::cuTile.RNG, A::ROCArray{T}) where {T<:cuTile.$Ts}
+        n = length(A)
+        n == 0 && return A
+        n_blocks = cld(n, cuTile.RAND_FILL_TILE)
+        cuTile.launch(cuTile.$kernel, n_blocks, A, rng.seed, rng.counter)
+        cuTile.advance_counter!(rng, UInt32(n_blocks * cuTile.RAND_FILL_TILE))
+        return A
+    end
+    @eval cuTile.$f!(A::ROCArray{<:cuTile.$Ts}) = Random.$f!(cuTile.get_global_rng(), A)
+end
 
 """
     TileTriton.use_rocm!()
@@ -37,7 +63,28 @@ function TileTriton.use_rocm!()
     # intrinsic ...raw.ptr.buffer.atomic.exch (the real one is *.swap), which
     # kills every atomic_xchg at compile. Buffer loads/stores stay on.
     TritonRun._py_setenv!("AMDGCN_USE_BUFFER_ATOMICS", "0")
+    _retarget_cutile!()
     @info "TileTriton targeting ROCm" arch wavefront=ws
+    return nothing
+end
+
+# Overwrites of cuTile methods that assume CUDA memory (runtime, like the
+# shim's: method overwriting is not allowed while precompiling).
+function _retarget_cutile!()
+    # any array whose pointer is ROCm device memory, e.g. a custom wrapper
+    @eval cuTile function device_pointer(arr::AbstractArray{T}) where {T}
+        ptr = pointer(arr)
+        ptr isa Ptr && !$_is_device_memory(ptr) &&
+            throw(ArgumentError("cannot create a TileArray from host memory (" *
+                                string(typeof(arr)) * ")"))
+        return reinterpret(Ptr{T}, ptr)
+    end
+    # the allocating host RNG calls build ROCArrays
+    for (f, f!, Ts) in ((:rand, :rand!, :RandTypes), (:randn, :randn!, :RandnTypes),
+                        (:randexp, :randexp!, :RandnTypes))
+        @eval cuTile Random.$f(rng::RNG, ::Type{T}, dims::Dims) where {T<:$Ts} =
+            Random.$f!(rng, $ROCArray{T}(undef, dims))
+    end
     return nothing
 end
 

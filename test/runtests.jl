@@ -3,6 +3,7 @@
 using TileTriton
 using TileTriton.TritonEmitter, TileTriton.TritonRun
 import cuTile as ct
+import Random
 
 const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
 @static if get(ENV, "TILETRITON_TEST_BACKEND", "cuda") == "rocm"
@@ -368,6 +369,34 @@ let script = """
     wait(proc)
     check("failing ct.@assert aborts with its message",
           proc.exitcode != 0 && contains(fetch(reader), "custom assert message"))
+end
+
+# --- cuTile's host API on the backend's arrays ------------------------------
+# a device-array wrapper cuTile knows nothing about (only `pointer` and size)
+struct Wrapped{T, A<:AbstractVector{T}} <: AbstractVector{T}
+    parent::A
+end
+Base.size(w::Wrapped) = size(w.parent)
+Base.strides(w::Wrapped) = strides(w.parent)
+Base.pointer(w::Wrapped) = pointer(w.parent)
+Base.getindex(::Wrapped, ::Int) = error("not implemented")
+
+let n = 4096, tile = 256
+    acc = GPU.ones(Float32, 2n)
+    x = GPU.ones(Float32, n)
+    ct.launch(accumulate!, cld(n, tile), view(acc, n+1:2n), Wrapped(x), ct.Constant(tile))
+    GPU.synchronize()
+    h = Array(acc)
+    check("ct.launch on a view and a wrapped array", all(==(1f0), h[1:n]) && all(==(2f0), h[n+1:end]))
+end
+
+let rng = ct.RNG(42), n = 4096
+    a = Random.rand(rng, Float32, n)
+    check("host RNG fills the backend's arrays",
+          a isa (BACKEND == "rocm" ? GPU.ROCArray : GPU.CuArray) && all(x -> 0 <= x < 1, Array(a)) &&
+          rng.counter == UInt32(n) && Array(a) == Array(Random.rand(ct.RNG(42), Float32, n)))
+    b = GPU.zeros(Float32, n); ct.randn!(b)
+    check("host randn! on the backend's arrays", abs(sum(Array(b)) / n) < 0.1)
 end
 
 println("ALL $npass TESTS PASSED")

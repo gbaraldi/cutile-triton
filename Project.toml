@@ -4,6 +4,7 @@ uuid = "41c06a59-6785-47c7-9807-2e34c1576fec"
 version = "0.1.0"
 
 [compat]
+Random = "1"
 SIMD = "3.7.2"
 cuTile = "1"
 julia = "1.11"
@@ -17,6 +18,7 @@ MLIR = "bfde9dd4-8f40-4a1e-be09-1475335e1c92"
 MLIR_jll = "a70bccb4-a5c0-5e2e-a329-e731972457e8"
 NVTX = "5da4648a-3479-48b8-97b9-01cb529c0a1f"
 PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SIMD = "fdea26ae-647d-5447-a871-4b548cad5224"
 cuTile = "0dea8319-8c4a-4662-a73d-20234d115b9a"
 
