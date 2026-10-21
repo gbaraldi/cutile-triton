@@ -49,10 +49,10 @@ using Core.Compiler: widenconst
 
 export emit_ttir, ArgSpec
 
-# Upstream bugfix (candidate PR for cuTile.jl): promote_scalar_type does
+# Upstream bugfix (JuliaGPU/cuTile.jl#336): promote_scalar_type does
 # `T.parameters` after `T <: Tuple`, but a Union of tuples passes that subtype
-# check and has no `.parameters` field → FieldError inside the front end on
-# Julia 1.12 (hvcat/hvncat kernels). Guard Unions conservatively. This
+# check and has no `.parameters` field → FieldError inside the front end (hit
+# by hvcat kernels on cuTile 0.3.2). Guard Unions conservatively. This
 # overwrite fixes it for both the Triton backend and native tileiras in this
 # session.
 # Upstream bugfix applied at runtime (evaluation into cuTile is not
@@ -82,8 +82,8 @@ function __init__()
         end
         return nothing
     end
-    # Upstream bugfix (candidate PR for cuTile.jl): the optimizer's one
-    # `inplace=true` rewrite rule — comparison strength reduction of
+    # Upstream bugfix (in-place rewrites removed by JuliaGPU/cuTile.jl#306,
+    # after 1.0.0): the optimizer's one `inplace=true` rewrite rule — comparison strength reduction of
     # `cmpi(addi(a, addi(b, 1)), y, ≤, signed)` → `cmpi(addi(a, b), y, <)` in
     # NORMALIZATION_RULES — mutates the matched addi chain IN PLACE without
     # checking that it is single-use. When the 1-based index feeds both a mask
@@ -99,7 +99,7 @@ function __init__()
     # then builds fresh ops and replaces only the matched root cmpi, leaving
     # shared sub-ops intact for their other users (DCE removes them when dead).
     for (i, r) in pairs(ct.NORMALIZATION_RULES)
-        r.inplace || continue
+        hasproperty(r, :inplace) && r.inplace || continue
         ct.NORMALIZATION_RULES[i] = ct.RewriteRule(r.lhs, r.rhs, r.guard, false)
     end
     return nothing
@@ -1716,9 +1716,9 @@ function masked_cas(cas, ptrs::IR.Value, cmp::IR.Value, val::IR.Value, mask::IR.
 end
 
 # Triton 3.7.1's AMD lowering runs a tensor tt.atomic_cas in every thread
-# holding a copy of an element (fixed upstream by triton-lang/triton#11841,
-# unreleased): the copies after the first see the first's update and return
-# it, and could reapply a CAS another program undid. Spread the CAS so every
+# holding a copy of an element (fixed in 3.8.0 by triton-lang/triton#9605):
+# the copies after the first see the first's update and return it, and could
+# reapply a CAS another program undid. Spread the CAS so every
 # element has one owner; the added lanes compare-and-swap 0 for 0 at their
 # element's address, which cannot change memory. Repeating each element R >= 2
 # times makes the pointers non-contiguous, so the layout holds one element per
