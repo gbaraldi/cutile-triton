@@ -338,4 +338,36 @@ let n = 4096, tile = 256
     check("racing restores arguments (one application)", all(==(2f0), Array(acc)))
 end
 
+# --- a failing ct.@assert aborts with its message ---------------------------
+# It takes the context down, hence a subprocess. cuTile's own version of this
+# test runs its native backend in the child, so it covers neither ROCm nor us.
+let script = """
+    using TileTriton
+    import cuTile as ct
+    @static if get(ENV, "TILETRITON_TEST_BACKEND", "cuda") == "rocm"
+        using AMDGPU; const GPU = AMDGPU; TileTriton.use_rocm!()
+    else
+        using CUDA; const GPU = CUDA
+    end
+    TileTriton.install_shim!()
+    function assert_fail(a, tile::Int)
+        bid = ct.bid(1)
+        ct.@assert bid > Int32(999999) "custom assert message"
+        ct.store(a; index=bid, tile=ct.load(a; index=bid, shape=(tile,)))
+        return
+    end
+    a = GPU.ones(Float32, 1024)
+    ct.launch(assert_fail, 8, a, ct.Constant(128))
+    GPU.synchronize()
+    """
+    cmd = `$(Base.julia_cmd()) --project=$(Base.active_project()) -e $script`
+    output = Pipe()
+    proc = run(pipeline(ignorestatus(cmd); stdout=output, stderr=output); wait=false)
+    close(output.in)
+    reader = @async read(output, String)
+    wait(proc)
+    check("failing ct.@assert aborts with its message",
+          proc.exitcode != 0 && contains(fetch(reader), "custom assert message"))
+end
+
 println("ALL $npass TESTS PASSED")

@@ -1500,7 +1500,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         cond === true && return nothing   # front end already proved it
         msg = resolve(cg, args[2])
         cv = cond isa IR.Value ? cond : materialize(cond, IR.Type(Bool))
-        tt.assert(cv; message=IR.Attribute(String(msg)))
+        tt.assert(assert_once(cv); message=IR.Attribute(String(msg)))
         return nothing
     elseif f === :MakeTokenNode || f === :JoinTokensNode
         return nothing
@@ -1533,6 +1533,22 @@ function _pair_values(a, b)
         bv = materialize(b, IR.type(av))
         return av, bv
     end
+end
+
+# A scalar assert fails in every thread at once, and with several warps in
+# several programs failing together the driver prints none of the messages.
+# Fold the condition into a 1024-element tensor whose element 0 alone carries
+# it: 1024 is the most threads a program has, so whatever the layout, one
+# thread per program reports, as the native backend does.
+function assert_once(cv::IR.Value)
+    is_tensor(cv) && return cv
+    n = 1024
+    i32 = IR.Type(Int32)
+    bt = IR.TensorType([n], IR.Type(Bool))
+    r = v1(tt.make_range(; result=IR.TensorType([n], i32), start=Int32(0), end_=Int32(n)))
+    others = v1(arith.cmpi(r, splat_const([n], 0, i32); predicate=IR.Attribute(Int64(1)),  # ne
+                           result=bt))
+    return v1(arith.ori(v1(tt.splat(cv; result=bt)), others; result=bt))
 end
 
 # Floor/ceil division. The AMD backend leaves arith.floordivsi/ceildivsi/
