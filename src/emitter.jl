@@ -739,6 +739,15 @@ end
 # Predicates / enums
 # ----------------------------------------------------------------------------
 
+# triton RMWOp for an atomic op (:add, :max, ..., :xchg) on `jelt` elements
+function rmw_code(op::Symbol, @nospecialize(jelt))
+    op === :add ? (jelt <: AbstractFloat ? 5 : 4) :     # FADD : ADD
+    op === :max ? (jelt <: Unsigned ? 8 : 6) :          # UMAX : MAX
+    op === :min ? (jelt <: Unsigned ? 9 : 7) :          # UMIN : MIN
+    op === :and ? 1 : op === :or ? 2 : op === :xor ? 3 :
+    op === :xchg ? 10 : error("rmw_code: unknown atomic op :$op")
+end
+
 # triton MemSemantic: RELAXED=1 ACQUIRE=2 RELEASE=3 ACQUIRE_RELEASE=4
 function mem_sem(x)
     s = Symbol(x)
@@ -1392,16 +1401,10 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         ptrs = asvalue(resolve(cg, args[1]))
         val = materialize(resolve(cg, args[2]), tile_type(typ))
         mask = resolve(cg, args[3])
+        # a constant-false mask touches no memory (the result is unspecified)
+        mask === false && return materialize(0, tile_type(typ))
         mv = mask isa IR.Value ? mask : nothing
-        RT = widenconst(typ)
-        jelt = tile_eltype(RT)
-        isflt = jelt <: AbstractFloat
-        isuns = jelt <: Unsigned
-        rmw = f === :atomic_add ? (isflt ? 5 : 4) :          # FADD : ADD
-              f === :atomic_max ? (isuns ? 8 : 6) :          # UMAX : MAX
-              f === :atomic_min ? (isuns ? 9 : 7) :          # UMIN : MIN
-              f === :atomic_and ? 1 : f === :atomic_or ? 2 :
-              f === :atomic_xor ? 3 : 10                     # XCHG
+        rmw = rmw_code(Symbol(string(f)[length("atomic_")+1:end]), tile_eltype(widenconst(typ)))
         return v1(tt.atomic_rmw(ptrs, val, mv; result=tile_type(typ),
                                 atomic_rmw_op=IR.Attribute(Int32(rmw)),
                                 sem=IR.Attribute(Int32(mem_sem(resolve(cg, args[4])))),
@@ -1414,12 +1417,8 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         view = resolve(cg, args[1])::ViewInfo
         val = asvalue(resolve(cg, args[2]))
         idxs = resolve(cg, args[3])
-        jelt = jl_eltype(cg, args[2], view.elty)
-        op = Symbol(string(f)[length("atomic_red_view_")+1:end])
-        rmw = op === :add ? (jelt <: AbstractFloat ? 5 : 4) :   # FADD : ADD
-              op === :max ? (jelt <: Unsigned ? 8 : 6) :         # UMAX : MAX
-              op === :min ? (jelt <: Unsigned ? 9 : 7) :         # UMIN : MIN
-              op === :and ? 1 : op === :or ? 2 : 3               # AND / OR / XOR
+        rmw = rmw_code(Symbol(string(f)[length("atomic_red_view_")+1:end]),
+                       jl_eltype(cg, args[2], view.elty))
         ptrs, mask = view_ptrs_mask(view, Any[(idxs isa Vector ? idxs : (idxs,))...], cg)
         tt.atomic_rmw(ptrs, val, mask; result=IR.type(val), atomic_rmw_op=IR.Attribute(Int32(rmw)),
                       sem=IR.Attribute(Int32(1)), scope=IR.Attribute(Int32(1)))   # RELAXED, GPU
@@ -1436,6 +1435,8 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         scope = IR.Attribute(Int32(mem_scope(resolve(cg, args[6]))))
         cas(p, c, v) = VENDOR[] === :amd && is_tensor(p) ? spread_cas(p, c, v, rt, sem, scope) :
                        v1(tt.atomic_cas(p, c, v; result=rt, sem, scope))
+        # masked-out elements are untouched and return `expected` (cuTile's contract)
+        mask === false && return cmp
         mask isa IR.Value || return cas(ptrs, cmp, val)
         return masked_cas(cas, ptrs, cmp, val, mask, rt)
 
@@ -1687,81 +1688,83 @@ end
 
 # tt.atomic_cas has no mask. Masked-out lanes compare-and-swap 0 for 0 at an
 # active lane's address, which leaves memory unchanged whatever order the
-# atomics take, and return 0; with no active lane the CAS is skipped.
+# atomics take, and return `expected`; with no active lane the CAS is skipped.
 function masked_cas(cas, ptrs::IR.Value, cmp::IR.Value, val::IR.Value, mask::IR.Value, rt)
-    zero = materialize(0, rt)
     if !is_tensor(ptrs)
         return v1(scf.if_(mask; results=IR.Type[rt],
                           thenRegion=yield_region(() -> (cas(ptrs, cmp, val),)),
-                          elseRegion=yield_region(() -> (zero,))))
+                          elseRegion=yield_region(() -> (cmp,))))
     end
     addr = max_active_addr(ptrs, mask)
     i64 = IR.Type(Int64)
     any = v1(arith.cmpi(addr, materialize(0, i64); predicate=IR.Attribute(Int64(1)),  # ne
                         result=IR.Type(Bool)))
     pt = IR.type(ptrs)
+    zero = materialize(0, rt)
     function active()
         p0 = v1(tt.int_to_ptr(addr; result=tensor_elem(pt)))
         safe = v1(arith.select(mask, ptrs, v1(tt.splat(p0; result=pt)); result=pt))
         old = cas(safe, v1(arith.select(mask, cmp, zero; result=rt)),
                   v1(arith.select(mask, val, zero; result=rt)))
-        return (v1(arith.select(mask, old, zero; result=rt)),)
+        return (v1(arith.select(mask, old, cmp; result=rt)),)
     end
     return v1(scf.if_(any; results=IR.Type[rt], thenRegion=yield_region(active),
-                      elseRegion=yield_region(() -> (zero,))))
+                      elseRegion=yield_region(() -> (cmp,))))
 end
 
 # Triton 3.7.1's AMD lowering runs a tensor tt.atomic_cas in every thread
 # holding a copy of an element (fixed upstream by triton-lang/triton#11841,
 # unreleased): the copies after the first see the first's update and return
-# it, and could reapply a CAS another program undid. Spread the CAS over
-# CAS_LANES lanes, more than any layout covers (512 threads, up to 4 elements
-# each), so every element has one owner; the added lanes compare-and-swap 0
-# for 0 at their element's address, which cannot change memory.
-const CAS_LANES = 2048
+# it, and could reapply a CAS another program undid. Spread the CAS so every
+# element has one owner; the added lanes compare-and-swap 0 for 0 at their
+# element's address, which cannot change memory. Repeating each element R >= 2
+# times makes the pointers non-contiguous, so the layout holds one element per
+# thread and 1024 lanes (the most threads a program has) leave no copies; from
+# 8192 elements no layout covers more (1024 threads, 8 16-bit elements each).
+spread_lanes(n::Int) = n >= 8192 ? n : max(1024, 2n)
+
 function spread_cas(ptrs::IR.Value, cmp::IR.Value, val::IR.Value, rt, sem, scope)
     sh = tensor_shape(ptrs)
     n = prod(sh)
+    L = spread_lanes(n)
     et = tensor_elem(rt)
     pt = tensor_elem(IR.type(ptrs))
     tensor(e, dims...) = IR.TensorType(Int[dims...], e)
     flat(x, e) = length(sh) == 1 ? x : v1(tt.reshape(x; result=tensor(e, n)))
     unflat(x) = length(sh) == 1 ? x : v1(tt.reshape(x; result=IR.TensorType(sh, et)))
-    if n >= CAS_LANES
-        return unflat(v1(tt.atomic_cas(flat(ptrs, pt), flat(cmp, et), flat(val, et);
-                                       result=tensor(et, n), sem, scope)))
-    end
-    R = CAS_LANES ÷ n
+    L == n && return unflat(v1(tt.atomic_cas(flat(ptrs, pt), flat(cmp, et), flat(val, et);
+                                             result=tensor(et, n), sem, scope)))
+    R = L ÷ n
     function widen(x, e)    # lane i*R + r carries element i
         x2 = v1(tt.expand_dims(flat(x, e); result=tensor(e, n, 1), axis=Int32(1)))
-        return v1(tt.reshape(v1(tt.broadcast(x2; result=tensor(e, n, R))); result=tensor(e, CAS_LANES)))
+        return v1(tt.reshape(v1(tt.broadcast(x2; result=tensor(e, n, R))); result=tensor(e, L)))
     end
     i32 = IR.Type(Int32)
-    lane = v1(tt.make_range(; result=tensor(i32, CAS_LANES), start=Int32(0), end_=Int32(CAS_LANES)))
-    r = v1(arith.remsi(lane, materialize(R, tensor(i32, CAS_LANES)); result=tensor(i32, CAS_LANES)))
-    own = v1(arith.cmpi(r, materialize(0, tensor(i32, CAS_LANES)); predicate=IR.Attribute(Int64(0)),
-                        result=tensor(IR.Type(Bool), CAS_LANES)))                       # eq
-    wt = tensor(et, CAS_LANES)
+    lane = v1(tt.make_range(; result=tensor(i32, L), start=Int32(0), end_=Int32(L)))
+    r = v1(arith.remsi(lane, materialize(R, tensor(i32, L)); result=tensor(i32, L)))
+    own = v1(arith.cmpi(r, materialize(0, tensor(i32, L)); predicate=IR.Attribute(Int64(0)),
+                        result=tensor(IR.Type(Bool), L)))                               # eq
+    wt = tensor(et, L)
     zero = materialize(0, wt)
     old = v1(tt.atomic_cas(widen(ptrs, pt), v1(arith.select(own, widen(cmp, et), zero; result=wt)),
                            v1(arith.select(own, widen(val, et), zero; result=wt)); result=wt, sem, scope))
-    # each element's result is in its owner lane: OR its R lanes, the rest zeroed
-    it = IR.isinteger(et) ? et : IR.Type(et == IR.Type(Float64) ? Int64 : Int32)
-    bits = IR.isinteger(et) ? old : v1(arith.bitcast(old; out=tensor(it, CAS_LANES)))
-    bits = v1(arith.select(own, bits, materialize(0, tensor(it, CAS_LANES)); result=tensor(it, CAS_LANES)))
-    bits = v1(tt.reshape(bits; result=tensor(it, n, R)))
+    # each element's result is in its owner lane: reduce its R lanes keeping
+    # the value whose owner flag is set
+    b1 = IR.Type(Bool)
     region = IR.Region()
-    blk = IR.Block([it, it], [IR.Location(), IR.Location()])
+    blk = IR.Block([et, b1, et, b1], [IR.Location() for _ in 1:4])
     push!(region, blk)
     IR.activate(blk)
     try
-        tt.reduce_return([v1(arith.ori(IR.argument(blk, 1), IR.argument(blk, 2); result=it))])
+        x, ox, y, oy = (IR.argument(blk, i) for i in 1:4)
+        tt.reduce_return([v1(arith.select(ox, x, y; result=et)), v1(arith.ori(ox, oy; result=b1))])
     finally
         IR.deactivate(blk)
     end
-    red = IR.result(tt.reduce([bits]; result=[tensor(it, n)], axis=IR.Attribute(Int32(1)), combineOp=region), 1)
-    res = IR.isinteger(et) ? red : v1(arith.bitcast(red; out=tensor(et, n)))
-    return unflat(res)
+    red = tt.reduce([v1(tt.reshape(old; result=tensor(et, n, R))),
+                     v1(tt.reshape(own; result=tensor(b1, n, R)))];
+                    result=[tensor(et, n), tensor(b1, n)], axis=IR.Attribute(Int32(1)), combineOp=region)
+    return unflat(IR.result(red, 1))
 end
 
 "The largest address among the lanes `mask` keeps, as an i64 (0 if none)."
@@ -1771,15 +1774,7 @@ function max_active_addr(ptrs::IR.Value, mask::IR.Value)
     it = IR.TensorType(sh, i64)
     a = v1(arith.select(mask, v1(tt.ptr_to_int(ptrs; result=it)), materialize(0, it); result=it))
     length(sh) == 1 || (a = v1(tt.reshape(a; result=IR.TensorType([prod(sh)], i64))))
-    region = IR.Region()
-    blk = IR.Block([i64, i64], [IR.Location(), IR.Location()])
-    push!(region, blk)
-    IR.activate(blk)
-    try
-        tt.reduce_return([v1(arith.maxui(IR.argument(blk, 1), IR.argument(blk, 2); result=i64))])
-    finally
-        IR.deactivate(blk)
-    end
+    region = combiner_region(max, DataType[UInt64], IR.Type[i64], tt.reduce_return)
     return IR.result(tt.reduce([a]; result=[i64], axis=IR.Attribute(Int32(0)), combineOp=region), 1)
 end
 

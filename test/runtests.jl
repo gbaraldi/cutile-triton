@@ -397,8 +397,8 @@ end
 let io = IOBuffer()
     TritonRun.code_triton(io, cas_masked, Tuple{TA1(Int), TA1(Int), Int64}; stage=:ttgir,
                           target=TritonRun.target(:amd), name="cas_masked")
-    check("AMD tensor CAS is spread over CAS_LANES lanes",
-          occursin(r"atomic_cas[^\n]*tensor<2048x", String(take!(io))))
+    check("AMD tensor CAS is spread so each element has one owner",
+          occursin(r"atomic_cas[^\n]*tensor<1024x", String(take!(io))))
 end
 
 # --- launch hints ------------------------------------------------------------
@@ -430,6 +430,38 @@ let a = copyto!(GPU.zeros(Float32, 8, 8), reshape(Float32.(1:64), 8, 8))
     GPU.synchronize()
     want = [zeros(Float32, 2, 8); Array(a)[1:2, :]]
     check("gather view masks negative sparse indices", Array(b) == want)
+end
+
+# --- review regressions --------------------------------------------------------
+# masked-out CAS lanes keep memory and return `expected`
+function cas_expected(arr, out, lim::Int64)
+    indices = ct.arange(16; dtype=Int)
+    old = ct.atomic_cas(arr, indices, 7, 9; mask=indices .<= ct.Tile(lim))
+    ct.scatter(out, indices, old)
+    return
+end
+function cas_scalar(arr, out, flag::Bool)
+    ct.store(out, 1, ct.atomic_cas(arr, 1, Int32(7), Int32(9); mask=flag))
+    return
+end
+function cas_never(arr, out)
+    ct.store(out, 1, ct.atomic_cas(arr, 1, Int32(7), Int32(9); mask=false))
+    return
+end
+
+let k = TritonRun.triton_kernel(cas_expected, Tuple{TA1(Int), TA1(Int), Int64}; name="cas_expected")
+    arr = GPU.fill(7, 16); out = GPU.fill(-1, 16)
+    TritonRun.launch!(k, 1, arr, out, Int64(4))
+    GPU.synchronize()
+    check("masked-out CAS lanes return expected",
+          Array(arr) == [fill(9, 4); fill(7, 12)] && all(==(7), Array(out)))
+    for (f, args, name) in ((cas_scalar, (false,), "a runtime-false"), (cas_never, (), "a constant-false"))
+        kk = TritonRun.triton_kernel(f, Tuple{TA1(Int32), TA1(Int32), map(typeof, args)...}; name="cas_mask")
+        arr = GPU.fill(Int32(7), 4); out = GPU.fill(Int32(-1), 4)
+        TritonRun.launch!(kk, 1, arr, out, args...)
+        GPU.synchronize()
+        check("scalar CAS with $name mask", Array(arr)[1] == 7 && Array(out)[1] == 7)
+    end
 end
 
 # --- candidate racing applies a read-modify-write kernel exactly once -------
