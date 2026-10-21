@@ -9,10 +9,10 @@ import cuTile as ct
 
 TileTriton.use_rocm!()
 
-const Spec1 = ct.ArraySpec{1}(128, true, (1,), (0,))
-const Spec2 = ct.ArraySpec{2}(128, true, (1, 0), (0, 0))
-TA1(T) = ct.TileArray{T, 1, Int32, Spec1}
-TA2(T) = ct.TileArray{T, 2, Int32, Spec2}
+# argument types as ct.launch derives them from the actual arrays: their
+# ArraySpec (alignment, size and stride divisibility) is what lets loads
+# vectorize
+tatype(x) = typeof(ct.TileArray(x))
 
 function timeit(f; warmup=3, nruns=20)
     for _ in 1:warmup; f(); end
@@ -46,7 +46,7 @@ let n = 1 << 28, tile = 2048
     a = AMDGPU.rand(Float32, n); b = AMDGPU.rand(Float32, n); c = AMDGPU.zeros(Float32, n)
     gbs(t) = string(round(Int, 3 * n * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(vadd, Tuple{TA1(Float32), TA1(Float32), TA1(Float32),
+    k = TritonRun.triton_kernel(vadd, Tuple{tatype(a), tatype(b), tatype(c),
                                             ct.Constant{Int, tile}}; name="vadd", num_warps=4)
     TritonRun.launch!(k, cld(n, tile), a, b, c); AMDGPU.synchronize()
     @assert Array(c[1:1000]) ≈ Array(a[1:1000]) .+ Array(b[1:1000])
@@ -77,7 +77,7 @@ let m = 131072, n = 512, tm = 32, tn = 512
     out = AMDGPU.zeros(Float32, m, 1)
     gbs(t) = string(round(Int, m * n * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(rowsum, Tuple{TA2(Float32), TA2(Float32),
+    k = TritonRun.triton_kernel(rowsum, Tuple{tatype(a), tatype(out),
                                               ct.Constant{Int, tm}, ct.Constant{Int, tn}};
                                 name="rowsum", num_warps=4)
     TritonRun.launch!(k, cld(m, tm), a, out); AMDGPU.synchronize()
@@ -113,7 +113,7 @@ let n = 4096, m = 16384, tile = 4096
     tmp = AMDGPU.zeros(Float32, 1, m)
     gbs(t) = string(round(Int, 2 * n * m * 4 / t / 1e9), " GB/s")
 
-    k = TritonRun.triton_kernel(softmax, Tuple{TA2(Float32), TA2(Float32),
+    k = TritonRun.triton_kernel(softmax, Tuple{tatype(y), tatype(x),
                                                ct.Constant{Int, tile}};
                                 name="softmax", num_warps=4)
     grid = 1024
@@ -155,7 +155,7 @@ for (T, label) in ((Float16, "matmul-f16"), (Float32, "matmul-f32"))
     A = AMDGPU.rand(T, M, K); B = AMDGPU.rand(T, K, N); C = AMDGPU.zeros(T, M, N)
     tflops(t) = string(round(2M * N * K / t / 1e12; digits=1), " TFLOPS")
 
-    k = TritonRun.triton_kernel(matmul, Tuple{TA2(T), TA2(T), TA2(T),
+    k = TritonRun.triton_kernel(matmul, Tuple{tatype(A), tatype(B), tatype(C),
                                               ct.Constant{Int, tm}, ct.Constant{Int, tn},
                                               ct.Constant{Int, tk}};
                                 name="matmul", num_warps=8)
