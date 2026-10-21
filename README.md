@@ -85,17 +85,19 @@ TritonRun.launch!(k, grid, rocarrays...)
 Validated on an MI300A (ROCm 7.2.4, cuTile 1.0.0; earlier rounds also under
 ROCm 6.4.2):
 
-- standalone suite 23/23 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
+- standalone suite 31/31 (`TILETRITON_TEST_BACKEND=rocm julia --project=.
   test/runtests.jl`), including the tf32 matmuls — CDNA3's XF32 MFMA
   absorbs `inputPrecision=tf32` at tf32-like accuracy — and the >2³¹-element
   addressing tests;
-- **cuTile's own device suite: 1,703 pass / 4 fail / 66 error** through the
-  shim. Every backend-relevant file matches the CUDA run exactly (atomics,
-  broadcast, control_flow, math, reductions, slice, tile, views, ...); the
-  delta is tests that require CUDA-the-package (random.jl compares against
-  cuTile's host-side RNG reference, which allocates a `CuArray`; core.jl stops
-  at `@device_code_sass`; int64_indexing.jl and pdl.jl call `@cuda`; two
-  hint tests query `CUDA.device()`);
+- **cuTile's own device suite: 1,873 pass / 4 fail / 18 error** through the
+  shim, file for file the CUDA run except one test: core.jl's failing
+  assertion runs native cuTile on CUDA in a child process (the standalone
+  suite checks the same through this backend, on both vendors). The compat
+  layer in `test/cutile_suite.jl` maps the suite's CUDA calls to AMDGPU
+  (`@device_code_sass` shows AMDGCN; `capability` answers like the H100 so
+  both runs take the same branches); the extension gives cuTile's host RNG
+  API and `TileArray` construction (views, wrappers) their ROCArray
+  equivalents;
 - head-to-head vs native AMDGPU.jl on the same workloads
   (`bench/rocm_compare.jl`, ROCm 7.2.4, untuned single tile shape):
 
