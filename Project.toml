@@ -4,6 +4,7 @@ uuid = "41c06a59-6785-47c7-9807-2e34c1576fec"
 version = "0.1.0"
 
 [compat]
+MLIR = "0.4"
 Random = "1"
 SIMD = "3.7.2"
 cuTile = "1"

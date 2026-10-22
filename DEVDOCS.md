@@ -185,9 +185,10 @@ MI300A vs native AMDGPU.jl 2.9.1 (`bench/rocm_compare.jl`, October 2026, ROCm
 | matmul f32 4096³ | 63.5 TFLOPS | 56.8 TFLOPS (rocBLAS) | 1.12× |
 
 The native rows run with `ROCM_COMPARE=native` in an environment of their own:
-TileTriton's environment cannot have AMDGPU.jl ≥ 2.8, since MLIR.jl 0.3.0
-caps CEnum at 0.4 and AMDGPU.jl needs ≥ 0.5 (MLIR.jl#92 lifts the cap,
-unreleased). Against the AMDGPU.jl 2.7.3 that environment resolves, the
+TileTriton's environment cannot have AMDGPU.jl 2.9, since cuTile 1.0.0 caps
+GPUArrays at 11 and AMDGPU.jl 2.9 needs 12.1 (JuliaGPU/cuTile.jl#330 lifts
+the cap, unreleased; MLIR.jl 0.4 already lifted the CEnum cap that blocked
+AMDGPU.jl ≥ 2.8). Against the AMDGPU.jl 2.7.3 that environment resolves, the
 baselines are far lower (`mul!` on Float16 3.3 TFLOPS before AMDGPU.jl#1049,
 `sum!` 194 GB/s, softmax 213 GB/s). The benchmark builds its argument types
 from the actual arrays (`ct.TileArray`), as `ct.launch` does: the
