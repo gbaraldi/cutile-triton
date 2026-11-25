@@ -573,6 +573,22 @@ let n = 4096, tile = 256
     check("racing restores arguments (one application)", all(==(2f0), Array(acc)))
 end
 
+# --- a compile hook sees Tile IR jobs only for targets Tile IR supports ------
+let n = 4096, tile = 256, jobs = []
+    acc = GPU.ones(Float32, n)
+    x = GPU.ones(Float32, n)
+    TileTriton.TritonShim.GPUCompiler.with_compile_hook(job -> push!(jobs, job)) do
+        # Tile IR has no sm_75 target; Triton still runs the kernel
+        ct.launch(accumulate!, cld(n, tile), acc, x, ct.Constant(tile); sm_arch=v"7.5")
+        GPU.synchronize()
+        TileTriton.TritonShim.report_job(accumulate!, Tuple{TA1(Float32), TA1(Float32),
+                                                            ct.Constant{Int, tile}};
+                                         sm_arch=v"9.0")
+    end
+    check("compile hook skips unsupported Tile IR targets",
+          all(==(2f0), Array(acc)) && length(jobs) == 1 && jobs[1] isa ct.TileJob)
+end
+
 # --- a failing ct.@assert aborts with its message ---------------------------
 # It takes the context down, hence a subprocess. cuTile's own version of this
 # test runs its native backend in the child, so it covers neither ROCm nor us.

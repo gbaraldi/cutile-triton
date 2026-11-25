@@ -69,6 +69,16 @@ const REFLECTION_SM_ARCH = v"9.0"
 const JOB_SOURCES = Dict{Any, Any}()
 const JOB_OPTIONS = (:opt_level, :num_ctas, :occupancy, :num_worker_warps, :name)
 
+# Whether Tile IR supports `sm_arch` at bytecode `version`: the architecture
+# condition of `ct.validate_tile_ir_target` (Tile IR needs sm_80+, and each
+# architecture family a minimum bytecode version), without throwing.
+function tile_ir_target_supported(sm_arch, version)
+    requirement = ct.tile_ir_requirement(sm_arch)
+    requirement === nothing && return false
+    _, min_version = requirement
+    return version >= min_version
+end
+
 function report_job(@nospecialize(f), @nospecialize(tt); sm_arch=nothing,
                     alias_groups::ct.AliasGroups=(), kwargs...)
     # internal to GPUCompiler; checked so that hook-free launches skip
@@ -77,7 +87,11 @@ function report_job(@nospecialize(f), @nospecialize(tt); sm_arch=nothing,
     sm_arch = something(sm_arch, _iscuda() ? ct.device_sm_arch() : REFLECTION_SM_ARCH)
     # the default bytecode version comes from probing `tileiras`; without one
     # (no CUDA toolkit), report the newest version cuTile supports
-    bytecode_version = ct.tileiras_available() ? nothing : last(ct.SUPPORTED_BYTECODE_VERSIONS)
+    bytecode_version = ct.tileiras_available() ? ct.bytecode_version() :
+                                                 last(ct.SUPPORTED_BYTECODE_VERSIONS)
+    # `tile_job` rejects targets Tile IR cannot compile for, while Triton
+    # still runs the kernel there: such a launch reports no job
+    tile_ir_target_supported(sm_arch, bytecode_version) || return nothing
     opts = (; (k => v for (k, v) in pairs(kwargs) if k in JOB_OPTIONS)...)
     job = ct.tile_job(f, tt; sm_arch, bytecode_version, alias_groups, opts...)
     JOB_SOURCES[job] = (f, tt)
