@@ -251,10 +251,11 @@ end
 
 function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   name::String, use_tma::Bool=true, wide_offsets::Bool=false,
-                                  hints=(;))
+                                  hints=(;), alias_groups::ct.AliasGroups=())
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    backend = _default_target().backend
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, alias_groups, backend)
     h = resolve_hints(hints, meta.kernel_meta)
     pin(ws) = h.num_worker_warps === nothing ? ws : (h.num_worker_warps,)
     if !meta.has_dot
@@ -266,7 +267,8 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
     # × warps (unique TTIRs only; e.g. TMA-ineligible kernels dedupe)
     variants = [(ttir, meta.spans)]
     for hints in (true, false)
-        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets)
+        t, _, m = emit_ttir(f, argtypes; name, use_tma=false, hints, wide_offsets, alias_groups,
+                            backend)
         any(v -> first(v) == t, variants) || push!(variants, (t, m.spans))
     end
     return [compile_kernel(t, argspec; name, num_warps=w, spans, h.occupancy)
@@ -276,16 +278,17 @@ end
 function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        name::String, num_warps::Union{Int,Nothing}=nothing,
                        num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
-                       wide_offsets::Bool=false, hints=(;))
+                       wide_offsets::Bool=false, hints=(;), alias_groups::ct.AliasGroups=())
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
     use_tma &= tma_eligible(argtypes)
-    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets)
+    ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, alias_groups,
+                                    backend=_default_target().backend)
     h = resolve_hints(hints, meta.kernel_meta)
     # schedule heuristic mirroring tileiras' observed choices: tensor-core
     # kernels get 8 warps, memory-bound kernels 4
     num_warps = something(num_warps, h.num_worker_warps, meta.has_dot ? 8 : 4)
     widen = () -> triton_kernel(f, argtypes; name, num_warps, num_stages, use_tma,
-                                wide_offsets=true, hints)
+                                wide_offsets=true, hints, alias_groups)
     return compile_kernel(ttir, argspec; name, num_warps, num_stages, meta.spans, widen,
                           h.occupancy)
 end
@@ -469,7 +472,7 @@ function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      use_tma::Bool=true, target::TargetInfo=_default_target(), hints=(;))
     cuda = target.backend == "cuda"
     use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
-    ttir, _, meta = emit_ttir(f, argtypes; name, use_tma)
+    ttir, _, meta = emit_ttir(f, argtypes; name, use_tma, backend=target.backend)
     # the warps and occupancy a launch would compile with
     h = resolve_hints(hints, meta.kernel_meta, target)
     num_warps = something(num_warps, h.num_worker_warps, meta.has_dot ? 8 : 4)

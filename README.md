@@ -27,6 +27,13 @@ and upstream findings are in [DEVDOCS.md](DEVDOCS.md).
 ¹ core.jl's failing-assertion test runs native cuTile on CUDA in a child
 process; the standalone suite checks the same behaviour through this backend.
 
+TileTriton now targets cuTile 1.1 (the numbers above are from 1.0.0). On a
+Radeon 880M (gfx1150, AMDGPU.jl 2.13 with its ROCm artifacts, no CUDA
+driver) the standalone suite passes 61 / 61 and cuTile 1.1's device suite
+1,977 / 2 / 4; all six are native-CUDA tests (compilation.jl's context and
+reflection tests, the failing-assertion child process, and a `code_tiled`
+that defaults to the CUDA device).
+
 The whole cuTile 1.0 language is covered, including gather/scatter views,
 atomics through views and masked `atomic_cas`, RNG, asserts and runtime
 throws, general loops, and launch hints. On H100, 8 of cuTile's 11 example

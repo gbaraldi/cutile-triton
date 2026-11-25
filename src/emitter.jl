@@ -49,62 +49,6 @@ using Core.Compiler: widenconst
 
 export emit_ttir, ArgSpec
 
-# Upstream bugfix (JuliaGPU/cuTile.jl#336): promote_scalar_type does
-# `T.parameters` after `T <: Tuple`, but a Union of tuples passes that subtype
-# check and has no `.parameters` field → FieldError inside the front end (hit
-# by hvcat kernels on cuTile 0.3.2). Guard Unions conservatively. This
-# overwrite fixes it for both the Triton backend and native tileiras in this
-# session.
-# Upstream bugfix applied at runtime (evaluation into cuTile is not
-# allowed during precompilation — including when a package extension
-# precompiles with TileTriton loaded, so skip under jl_generating_output;
-# every real session still runs this __init__ outside precompilation).
-function __init__()
-    ccall(:jl_generating_output, Cint, ()) == 1 && return
-    @eval ct function promote_scalar_type(@nospecialize(T))
-        T isa Union && return nothing
-        T <: Number && return Tile{T, Tuple{}}
-        if T <: Tuple
-            params = T.parameters
-            any(Base.isvarargtype, params) && return nothing
-            any_promoted = false
-            new_params = map(params) do P
-                P = CC.widenconst(P)
-                if P <: Number && !(P <: Tile)
-                    any_promoted = true
-                    Tile{P, Tuple{}}
-                else
-                    P
-                end
-            end
-            any_promoted || return nothing
-            return Tuple{new_params...}
-        end
-        return nothing
-    end
-    # Upstream bugfix (in-place rewrites removed by JuliaGPU/cuTile.jl#306,
-    # after 1.0.0): the optimizer's one `inplace=true` rewrite rule — comparison strength reduction of
-    # `cmpi(addi(a, addi(b, 1)), y, ≤, signed)` → `cmpi(addi(a, b), y, <)` in
-    # NORMALIZATION_RULES — mutates the matched addi chain IN PLACE without
-    # checking that it is single-use. When the 1-based index feeds both a mask
-    # comparison and a gather/scatter (whose lowering subtracts 1), e.g.
-    #     c = off .+ ct.arange(N); mask = c .≤ lim
-    #     ct.gather(A, (c, cols); mask)
-    # the shared `addi(off, addi(iota, 1))` is rewritten to 0-based for the
-    # comparison, but the gather's `subi(c, 1)` still refers to it — every
-    # gathered element shifts down by one row (hit by spmm_heavy_reduce_kernel;
-    # whether it fires depends on worklist pop order, so e.g. an extra
-    # `reshape` on the index tile masks it). Demoting the rule to the ordinary
-    # non-inplace mode is always sound and keeps the optimization: the rewrite
-    # then builds fresh ops and replaces only the matched root cmpi, leaving
-    # shared sub-ops intact for their other users (DCE removes them when dead).
-    for (i, r) in pairs(ct.NORMALIZATION_RULES)
-        hasproperty(r, :inplace) && r.inplace || continue
-        ct.NORMALIZATION_RULES[i] = ct.RewriteRule(r.lhs, r.rhs, r.guard, false)
-    end
-    return nothing
-end
-
 # ----------------------------------------------------------------------------
 # Value model
 # ----------------------------------------------------------------------------
@@ -174,6 +118,10 @@ const USE_TMA = Ref(true)
 # Kernel-creation-time switch: in-tile offsets of every view at i64, for the
 # launches whose spans (see `SpanTerm`) do not fit i32.
 const WIDE_OFFSETS = Ref(false)
+
+# Kernel-creation-time switch: the vendor the TTIR is for ("cuda" or "hip"),
+# for the device math library calls (`emit_libm`).
+const EMIT_BACKEND = Ref("cuda")
 
 
 # TMA legality for a partition view: 2-D, unit-stride inner dim, box dims
@@ -933,7 +881,7 @@ const MATH_UN = Dict(:exp => math.exp, :exp2 => math.exp2, :log => math.log,
                      :tanh => math.tanh, :sqrt => math.sqrt, :rsqrt => math.rsqrt,
                      :fabs => math.absf, :absf => math.absf, :absi => math.absi,
                      :floor => math.floor, :ceil => math.ceil, :erf => math.erf)
-const MATH_BIN = Dict(:pow => math.powf, :atan2 => math.atan2)
+const MATH_BIN = Dict{Symbol, Any}()
 
 function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecialize(typ))
     f = fname(callee)
@@ -1185,8 +1133,13 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
     elseif f === :ftof
         src = resolve(cg, args[1])
         Tdst = resolve(cg, args[2])
+        mode = length(args) >= 3 ? resolve(cg, args[3]) : nothing
+        mode === RoundNearest && (mode = nothing)
         if Tdst === ct.TFloat32
-            return TF32Val(asvalue(src))
+            # kept as f32 for the dot; an explicit rounding mode rounds it to
+            # tf32's 10 mantissa bits here
+            sv = asvalue(src)
+            return TF32Val(mode === nothing ? sv : round_mantissa(sv, 13, mode))
         end
         sv = asvalue(src)
         dst_et = scalar_type(Tdst)
@@ -1195,7 +1148,9 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         sw = API.mlirTypeIsAF64(src_et) ? 64 : API.mlirTypeIsAF32(src_et) ? 32 : 16
         dw = API.mlirTypeIsAF64(dst_et) ? 64 : API.mlirTypeIsAF32(dst_et) ? 32 : 16
         sw == dw && return sv
-        return sw > dw ? v1(arith.truncf(sv; out=res_t)) : v1(arith.extf(sv; out=res_t))
+        sw < dw && return v1(arith.extf(sv; out=res_t))   # exact
+        r = v1(arith.truncf(sv; out=res_t))               # to nearest, ties to even
+        return mode === nothing ? r : round_narrowed(sv, r, mode)
     elseif f in (:itof, :ftoi, :exti, :trunci)
         r = resolve(cg, args[1])
         out_t = tile_type(typ)
@@ -1223,10 +1178,24 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         pred = cmpf_predicate(resolve(cg, args[3]))
         return v1(arith.cmpf(av, bv; predicate=IR.Attribute(Int64(pred)), result=tile_type(typ)))
     elseif f === :select
-        c = asvalue(resolve(cg, args[1]))
+        c = resolve(cg, args[1])
         a = resolve(cg, args[2]); b = resolve(cg, args[3])
         av, bv = _pair_values(a, b)
+        c = c isa IR.Value ? c : materialize(c, IR.Type(Bool))
+        c, av, bv = broadcast_values(c, av, bv)
         return v1(arith.select(c, av, bv; result=IR.type(av)))
+    elseif f === :egal
+        # `===` compares bit patterns: floats as same-width integers
+        a = resolve(cg, args[1]); b = resolve(cg, args[2])
+        av, bv = _pair_values(a, b)
+        et = is_tensor(av) ? tensor_elem(IR.type(av)) : IR.type(av)
+        if !IR.isinteger(et)
+            ity = IR.Type(Dict("f16" => Int16, "bf16" => Int16, "f32" => Int32,
+                               "f64" => Int64)[string(et)])   # signless
+            bitcast(v) = bitcast_value(v, _same_shape(v, ity))
+            av, bv = bitcast(av), bitcast(bv)
+        end
+        return v1(arith.cmpi(av, bv; predicate=IR.Attribute(Int64(0)), result=tile_type(typ)))
 
     # ---- binary arithmetic ----
     elseif haskey(INT_BIN, f)
@@ -1324,34 +1293,21 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         op = signed ? arith.shrsi : arith.shrui
         return v1(op(av, bv; result=IR.type(av)))
     elseif f === :pow
-        # triton's pipeline has no math.powf legalization; use exp2(y·log2 |x|)
-        # plus IEEE-pow fixups: negative base with integral y takes the parity
-        # sign (NaN when y is non-integral), and y == 0 is 1 for every x.
         a = resolve(cg, args[1]); b = resolve(cg, args[2])
-        av, bv = _pair_values(a, b)
-        T = IR.type(av)
-        bool_t = API.mlirTypeIsARankedTensor(T) ?
-            IR.TensorType(tensor_shape(av), IR.Type(Bool)) : IR.Type(Bool)
-        cmpfv(x, y, pred) = v1(arith.cmpf(x, y; predicate=IR.Attribute(Int64(pred)), result=bool_t))
-        ax = v1(math.absf(av; result=T))
-        lg = v1(math.log2(ax; result=T))
-        pr = v1(arith.mulf(bv, lg; result=T))
-        r = v1(math.exp2(pr; result=T))
-        zero = materialize(0, T); one = materialize(1, T); two = materialize(2, T)
-        isneg = cmpfv(av, zero, 4)                       # olt
-        yfl = v1(math.floor(bv; result=T))
-        isint = cmpfv(yfl, bv, 1)                        # oeq
-        halfy = v1(arith.divf(bv, two; result=T))
-        hfl = v1(math.floor(halfy; result=T))
-        m = v1(arith.subf(bv, v1(arith.mulf(hfl, two; result=T)); result=T))
-        isodd = cmpfv(m, one, 1)                         # y - 2⌊y/2⌋ == 1
-        negr = v1(arith.subf(zero, r; result=T))
-        signed_r = v1(arith.select(isodd, negr, r; result=T))
-        nanv = materialize(NaN, T)
-        neg_case = v1(arith.select(isint, signed_r, nanv; result=T))
-        res = v1(arith.select(isneg, neg_case, r; result=T))
-        iszero_y = cmpfv(bv, zero, 1)
-        return v1(arith.select(iszero_y, one, res; result=T))
+        return emit_pow(_pair_values(a, b)...)
+    elseif f === :powi
+        # integer exponent: the float pow path is exact about the sign (parity)
+        # and y == 0 for integral y
+        a = resolve(cg, args[1]); b = resolve(cg, args[2])
+        av = a isa IR.Value || a isa TF32Val ? asvalue(a) : materialize(a, scalar_type(typeof(a)))
+        bv = b isa IR.Value ? b : materialize(b, scalar_type(typeof(b)))
+        av, bv = broadcast_values(av, bv)
+        signed = !(jl_eltype(cg, args[2], Int32) <: Unsigned)
+        bf = v1((signed ? arith.sitofp : arith.uitofp)(bv; out=IR.type(av)))
+        return emit_pow(av, bf)
+    elseif f === :atan2
+        a = resolve(cg, args[1]); b = resolve(cg, args[2])
+        return emit_libm(cg, "atan2", _pair_values(a, b)...)
     elseif haskey(MATH_UN, f)
         a = asvalue(resolve(cg, args[1]))
         return v1(MATH_UN[f](a; result=IR.type(a)))
@@ -1360,7 +1316,12 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         av, bv = _pair_values(a, b)
         return v1(MATH_BIN[f](av, bv; result=IR.type(av)))
     elseif f === :fma
-        a = asvalue(resolve(cg, args[1])); b = asvalue(resolve(cg, args[2])); c = asvalue(resolve(cg, args[3]))
+        a, b, c = (resolve(cg, x) for x in args[1:3])
+        ref = something(findfirst(x -> x isa IR.Value || x isa TF32Val, (a, b, c)), 0)
+        ref == 0 && error("fma: no operand is a value")
+        rty = IR.type(asvalue((a, b, c)[ref]))
+        a, b, c = map(x -> x isa IR.Value || x isa TF32Val ? asvalue(x) : materialize(x, rty), (a, b, c))
+        a, b, c = broadcast_values(a, b, c)
         return v1(math.fma(a, b, c; result=IR.type(a)))
 
     # ---- matmul ----
@@ -1548,8 +1509,7 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         (src isa IR.Value || src isa TF32Val) || return materialize(src, tty)
         sv = asvalue(src)
         IR.type(sv) == tty && return sv
-        return is_tensor(sv) ? v1(tt.bitcast(sv; result=tty)) :
-                               v1(arith.bitcast(sv; out=tty))
+        return bitcast_value(sv, tty)
     elseif f === :extract
         src = asvalue(resolve(cg, args[1]))
         idx = resolve(cg, args[2])   # 0-based, tile-granular, per Julia dim
@@ -1575,6 +1535,52 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
             end
         end
         return v
+    elseif f === :insert
+        # (tile, 0-based slice index per Julia dim, value): `tile` with the
+        # value-shaped slice at that index replaced. Tile the value over the
+        # destination shape (element i of an axis takes value element
+        # i mod n) and select it inside the slice.
+        dst = asvalue(resolve(cg, args[1]))
+        idx = resolve(cg, args[2])
+        any(i -> i isa IR.Value, idx) &&
+            error("insert: runtime slice indices not supported yet")
+        dsh = tensor_shape(dst)
+        et = tensor_elem(IR.type(dst))
+        N = length(dsh)
+        val = resolve(cg, args[3])
+        vv = val isa IR.Value || val isa TF32Val ? asvalue(val) : materialize(val, et)
+        # a scalar (0-D) value is a one-element slice
+        is_tensor(vv) || (vv = v1(tt.splat(vv; result=IR.TensorType(fill(1, N), et))))
+        vsh = tensor_shape(vv)
+        cur, cursh = vv, copy(vsh)
+        for a in 1:N
+            k = dsh[a] ÷ vsh[a]
+            k == 1 && continue
+            sh1 = [cursh[1:a-1]; 1; cursh[a:end]]
+            sh2 = [cursh[1:a-1]; k; cursh[a:end]]
+            r = v1(tt.reshape(cur; result=IR.TensorType(sh1, et)))
+            b = v1(tt.broadcast(r; result=IR.TensorType(sh2, et)))
+            cursh[a] *= k
+            cur = v1(tt.reshape(b; result=IR.TensorType(cursh, et)))
+        end
+        i32 = IR.Type(Int32)
+        bool = IR.Type(Bool)
+        sh_julia = reverse(dsh)
+        mask = nothing
+        for d in 1:N
+            ax = axis_of(N, d) + 1
+            dsh[ax] == vsh[ax] && continue   # the slice spans this dim
+            n = dsh[ax]
+            r = v1(tt.make_range(; result=IR.TensorType([n], i32), start=Int32(0), end_=Int32(n)))
+            q = v1(arith.divsi(r, splat_const([n], vsh[ax], i32); result=IR.TensorType([n], i32)))
+            c = v1(arith.cmpi(q, splat_const([n], Int(idx[d]), i32);
+                              predicate=IR.Attribute(Int64(0)), result=IR.TensorType([n], bool)))
+            full = expand_to_full(c, sh_julia, d, bool)
+            mask = mask === nothing ? full :
+                   v1(arith.andi(mask, full; result=IR.TensorType(dsh, bool)))
+        end
+        mask === nothing && return cur
+        return v1(arith.select(mask, cur, dst; result=IR.type(dst)))
     elseif f === :pack
         # Tile{S,(N)} → Tile{UInt8,(N·bw/8)}: repeatedly split each element
         # into (lo, hi) half-width parts, interleaved little-endian.
@@ -1635,6 +1641,10 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
         return nothing
     elseif f === :MakeTokenNode || f === :JoinTokensNode
         return nothing
+    elseif f === :gdc_launch_dependents_tko || f === :gdc_wait_tko
+        # programmatic dependent launch: launches here never overlap (the
+        # `dependent` flag is not passed on), so there is nothing to wait for
+        return nothing
     elseif f === :fpmode_begin || f === :fpmode_end
         # fast-math mode scoping: Triton has no region-scoped fp modes; ops
         # default to its standard fast-math behavior. Accept and ignore.
@@ -1648,17 +1658,182 @@ function walk_call!(cg::CG, @nospecialize(callee), args::Vector{Any}, @nospecial
     error("walk_call!: unhandled intrinsic $f (args=$args)")
 end
 
+# ----------------------------------------------------------------------------
+# Rounding modes of float conversions (`ftof`'s `rounding`). arith.truncf
+# rounds to nearest, ties to even; the other modes adjust its result by one
+# ulp, found as the adjacent value through the integer bits (adding one to the
+# bits steps away from zero, for either sign).
+# ----------------------------------------------------------------------------
+
+# triton reinterprets tensors with tt.bitcast and leaves scalars to arith
+bitcast_value(v::IR.Value, ty) =
+    is_tensor(v) ? v1(tt.bitcast(v; result=ty)) : v1(arith.bitcast(v; out=ty))
+
+function _same_shape(v::IR.Value, et)
+    is_tensor(v) ? IR.TensorType(tensor_shape(v), et) : et
+end
+_int_of_width(w) = IR.Type(w == 16 ? Int16 : w == 32 ? Int32 : Int64)
+function _float_width(t)
+    s = string(t)
+    s in ("f16", "bf16") ? 16 : s == "f32" ? 32 : s == "f64" ? 64 :
+        error("rounding: unsupported float type $s")
+end
+_elt(v::IR.Value) = is_tensor(v) ? tensor_elem(IR.type(v)) : IR.type(v)
+
+"""
+`r`, the round-to-nearest narrowing of `src`, rounded by `mode` instead:
+RoundToZero, RoundDown, RoundUp or RoundNearestTiesAway.
+"""
+function round_narrowed(src::IR.Value, r::IR.Value, mode)
+    rt = IR.type(r)
+    it = _same_shape(r, _int_of_width(_float_width(_elt(r))))
+    bt = _same_shape(r, IR.Type(Bool))
+    cmpf(x, y, pred) = v1(arith.cmpf(x, y; predicate=IR.Attribute(Int64(pred)), result=bt))
+    sel(c, x, y) = v1(arith.select(c, x, y; result=IR.type(x)))
+    bits = bitcast_value(r, it)
+    away = bitcast_value(v1(arith.addi(bits, materialize(1, it); result=it)), rt)
+    back = v1(arith.extf(r; out=IR.type(src)))
+    babs = v1(math.absf(back; result=IR.type(src)))
+    sabs = v1(math.absf(src; result=IR.type(src)))
+    if mode === RoundNearestTiesAway
+        # at a tie, ties-to-even may have picked the smaller magnitude
+        aback = v1(arith.extf(away; out=IR.type(src)))
+        sum = v1(arith.addf(back, aback; result=IR.type(src)))
+        mid = v1(arith.mulf(sum, materialize(0.5, IR.type(src)); result=IR.type(src)))
+        return sel(cmpf(src, mid, 1), away, r)                     # oeq
+    end
+    # the neighbor toward zero: one step down in magnitude; zero stays zero
+    toward0 = bitcast_value(v1(arith.subi(bits, materialize(1, it); result=it)), rt)
+    iszero = cmpf(r, materialize(0, rt), 1)                       # oeq
+    toward0 = sel(iszero, r, toward0)
+    over = cmpf(babs, sabs, 2)                                    # ogt: |r| > |src|
+    under = cmpf(babs, sabs, 4)                                   # olt: |r| < |src|
+    neg = cmpf(src, materialize(0, IR.type(src)), 4)              # olt
+    pos = v1(arith.xori(neg, materialize(true, bt); result=bt))
+    both(x, y) = v1(arith.andi(x, y; result=bt))
+    mode === RoundToZero && return sel(over, toward0, r)
+    # RoundUp needs r ≥ src: grow a positive r that undershoots, shrink a
+    # negative one that overshoots; RoundDown mirrors it. From a ±0 result the
+    # step away keeps the sign truncf gave it, `src`'s.
+    if mode === RoundUp
+        grow, shrink = both(pos, under), both(neg, over)
+    elseif mode === RoundDown
+        grow, shrink = both(neg, under), both(pos, over)
+    else
+        error("ftof: unsupported rounding mode $mode")
+    end
+    return sel(shrink, toward0, sel(grow, away, r))
+end
+
+"""
+Round f32 `v` to `drop` fewer mantissa bits (tf32: 13) by `mode`, keeping the
+f32 format. NaN passes through.
+"""
+function round_mantissa(v::IR.Value, drop::Int, mode)
+    ft = IR.type(v)
+    it = _same_shape(v, IR.Type(Int32))
+    bt = _same_shape(v, IR.Type(Bool))
+    bits = bitcast_value(v, it)
+    c(x) = materialize(x, it)
+    low = Int32((1 << drop) - 1)
+    trunc = v1(arith.andi(bits, c(~low); result=it))
+    rem = v1(arith.andi(bits, c(low); result=it))
+    inexact = v1(arith.cmpi(rem, c(0); predicate=IR.Attribute(Int64(1)), result=bt))   # ne
+    neg = v1(arith.cmpi(bits, c(0); predicate=IR.Attribute(Int64(2)), result=bt))      # slt: sign bit
+    sel(cnd, x, y) = v1(arith.select(cnd, x, y; result=IR.type(x)))
+    step = v1(arith.addi(trunc, c(1 << drop); result=it))
+    out = if mode === RoundToZero
+        trunc
+    elseif mode === RoundNearestTiesAway
+        v1(arith.andi(v1(arith.addi(bits, c(1 << (drop - 1)); result=it)), c(~low); result=it))
+    elseif mode === RoundUp
+        sel(v1(arith.andi(inexact, v1(arith.xori(neg, materialize(true, bt); result=bt)); result=bt)), step, trunc)
+    elseif mode === RoundDown
+        sel(v1(arith.andi(inexact, neg; result=bt)), step, trunc)
+    else
+        error("ftof: unsupported rounding mode $mode")
+    end
+    r = bitcast_value(out, ft)
+    isnan = v1(arith.cmpf(v, v; predicate=IR.Attribute(Int64(14)), result=bt))   # uno
+    return sel(isnan, v, r)
+end
+
+# x^y for floats: triton's pipeline has no math.powf legalization; use
+# exp2(y·log2 |x|) plus IEEE-pow fixups: negative base with integral y takes
+# the parity sign (NaN when y is non-integral), and y == 0 is 1 for every x.
+function emit_pow(av::IR.Value, bv::IR.Value)
+    T = IR.type(av)
+    bool_t = API.mlirTypeIsARankedTensor(T) ?
+        IR.TensorType(tensor_shape(av), IR.Type(Bool)) : IR.Type(Bool)
+    cmpfv(x, y, pred) = v1(arith.cmpf(x, y; predicate=IR.Attribute(Int64(pred)), result=bool_t))
+    ax = v1(math.absf(av; result=T))
+    lg = v1(math.log2(ax; result=T))
+    pr = v1(arith.mulf(bv, lg; result=T))
+    r = v1(math.exp2(pr; result=T))
+    zero = materialize(0, T); one = materialize(1, T); two = materialize(2, T)
+    isneg = cmpfv(av, zero, 4)                       # olt
+    yfl = v1(math.floor(bv; result=T))
+    isint = cmpfv(yfl, bv, 1)                        # oeq
+    halfy = v1(arith.divf(bv, two; result=T))
+    hfl = v1(math.floor(halfy; result=T))
+    m = v1(arith.subf(bv, v1(arith.mulf(hfl, two; result=T)); result=T))
+    isodd = cmpfv(m, one, 1)                         # y - 2⌊y/2⌋ == 1
+    negr = v1(arith.subf(zero, r; result=T))
+    signed_r = v1(arith.select(isodd, negr, r; result=T))
+    nanv = materialize(NaN, T)
+    neg_case = v1(arith.select(isint, signed_r, nanv; result=T))
+    res = v1(arith.select(isneg, neg_case, r; result=T))
+    iszero_y = cmpfv(bv, zero, 1)
+    return v1(arith.select(iszero_y, one, res; result=T))
+end
+
+# Device math library functions by name, per vendor (as triton's `libdevice`
+# modules bind them; the backend links the library): CUDA's libdevice, AMD's
+# OCML. 16-bit floats compute in f32.
+const LIBM = Dict(("cuda", "atan2", 32) => "__nv_atan2f", ("cuda", "atan2", 64) => "__nv_atan2",
+                  ("hip", "atan2", 32) => "__ocml_atan2_f32", ("hip", "atan2", 64) => "__ocml_atan2_f64")
+
+function emit_libm(cg::CG, name::String, vals::IR.Value...)
+    T = IR.type(first(vals))
+    et = is_tensor(first(vals)) ? tensor_elem(T) : T
+    width = Dict("f16" => 16, "bf16" => 16, "f32" => 32, "f64" => 64)[string(et)]
+    narrow = width == 16
+    wide_t(v) = is_tensor(v) ? IR.TensorType(tensor_shape(v), IR.Type(Float32)) : IR.Type(Float32)
+    args = IR.Value[narrow ? v1(arith.extf(v; out=wide_t(v))) : v for v in vals]
+    sym = get(LIBM, (EMIT_BACKEND[], name, narrow ? 32 : width)) do
+        error("no $(EMIT_BACKEND[]) device library function for $name on $(string(et))")
+    end
+    r = v1(tt.extern_elementwise(args; result=IR.type(first(args)), libname=IR.Attribute(""),
+                                 libpath=IR.Attribute(""), symbol=IR.Attribute(sym),
+                                 pure=IR.Attribute(true)))
+    return narrow ? v1(arith.truncf(r; out=T)) : r
+end
+
+"""
+Splat the scalar (0-D) values among `vals` to the shape of the tensor ones.
+cuTile leaves a 0-D operand next to a shaped one where constant folding or
+if-conversion removed the broadcast between them (fma, select, binary ops).
+"""
+function broadcast_values(vals::IR.Value...)
+    i = findfirst(is_tensor, vals)
+    i === nothing && return vals
+    shape = tensor_shape(vals[i])
+    return map(vals) do v
+        is_tensor(v) ? v : v1(tt.splat(v; result=IR.TensorType(shape, IR.type(v))))
+    end
+end
+
 # Pair two operands, materializing constants. When both are constants (heavy
 # const-folding, e.g. Philox seed math), type them from their Julia types.
 function _pair_values(a, b)
     if a isa IR.Value || a isa TF32Val
         av = asvalue(a)
         bv = (b isa IR.Value || b isa TF32Val) ? asvalue(b) : materialize(b, IR.type(av))
-        return av, bv
+        return broadcast_values(av, bv)
     elseif b isa IR.Value || b isa TF32Val
         bv = asvalue(b)
         av = materialize(a, IR.type(bv))
-        return av, bv
+        return broadcast_values(av, bv)
     else
         av = materialize(a, scalar_type(typeof(a)))
         bv = materialize(b, IR.type(av))
@@ -2195,18 +2370,21 @@ function arg_value(entry, kref::Ref{Int}, @nospecialize(T))
 end
 
 # ct.code_structured(f, argtypes; optimize=true), keeping the
-# `@compiler_options` metadata (launch hints) that it drops
-function structured_with_meta(@nospecialize(f), @nospecialize(argtypes))
-    stripped, const_argtypes = ct.process_const_argtypes(f, argtypes)
+# `@compiler_options` metadata (launch hints) that it drops. `alias_groups`
+# lists the kernel arrays a launch found overlapping (cuTile's `alias_groups`);
+# the optimizer may reorder accesses to arrays outside every group.
+function structured_with_meta(@nospecialize(f), @nospecialize(argtypes);
+                              @nospecialize(alias_groups::ct.AliasGroups=()))
     world = Base.get_world_counter()
-    mi = ct.lookup_method_instance(f, stripped; world)
-    cache = ct.CacheView{ct.CuTileResults}(:cuTile, world)
-    ir, rettype = ct.emit_julia(cache, mi; const_argtypes)
+    ir, rettype = ct.emit_julia(f, argtypes; world)
     sci, _, kernel_meta = ct.emit_structured(ir, rettype)
     sci = copy(sci)
-    ct.run_passes!(sci)
+    ct.run_passes!(sci; alias_groups)
     return sci, kernel_meta
 end
+
+"Whether a kernel function of inferred type `AT` carries values (a closure's captures)."
+captures_values(@nospecialize(AT)) = !(AT isa Core.Const) && !Base.issingletontype(widenconst(AT))
 
 """
     emit_ttir(f, argtypes; name="kernel") -> (ttir_text, Vector{ArgSpec})
@@ -2216,14 +2394,16 @@ the launcher needs.
 """
 function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kernel",
                    use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing,
-                   wide_offsets::Bool=false)
+                   wide_offsets::Bool=false,
+                   @nospecialize(alias_groups::ct.AliasGroups=()), backend::String="cuda")
     USE_TMA[] = use_tma
+    EMIT_BACKEND[] = backend
     WIDE_OFFSETS[] = wide_offsets
     h = hints !== nothing ? hints : get(ENV, "TRITON_ARG_ATTRS", "1") != "0"
     EMIT_DIV_ATTRS[] = h
     EMIT_CONST_STRIDE[] = hints !== nothing ? hints :
                           get(ENV, "TRITON_CONST_STRIDE", "1") != "0"
-    sci, kernel_meta = structured_with_meta(f, argtypes)
+    sci, kernel_meta = structured_with_meta(f, argtypes; alias_groups)
 
     ctx = IR.Context()
     IR.activate(ctx)
@@ -2238,11 +2418,13 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
 
         # Build parameter list from sci.argtypes (slot 1 = the function),
         # flattening nested structs recursively like cuTile's _flatten_static!.
+        # The function is a parameter too when it captures values (a closure),
+        # as in cuTile's ABI: its fields come first.
         param_types = IR.Type[]
         i32 = IR.Type(Int32)
         arg_attr_dicts = IR.Attribute[]
         for (i, AT) in enumerate(sci.argtypes)
-            i == 1 && continue
+            i == 1 && !captures_values(AT) && continue
             AT isa Core.Const && continue
             T = widenconst(AT)
             arg_mlir_types!(param_types, arg_attr_dicts, T)
@@ -2264,7 +2446,7 @@ function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kern
         # Wire params back to Julia slots.
         kref = Ref(0)
         for (i, AT) in enumerate(sci.argtypes)
-            i == 1 && continue
+            i == 1 && !captures_values(AT) && continue
             if AT isa Core.Const
                 cg.args[i] = AT.val
                 continue
