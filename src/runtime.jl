@@ -199,8 +199,11 @@ layernorm bwd_dwdb 101→59µs and bwd_dx 414→284µs).
 # 16-bit floats (`ConvertTritonGPUToLLVM` → "PassManager::run failed");
 # plain pointer accesses compile fine, so before sm_90 descriptors are
 # skipped whenever a 16-bit float array reaches the kernel (recursively:
-# TileArrays arrive inside structs such as SplitRangeCSRMatrix). Hopper and
-# later lower them fine, and there they are the fast path.
+# TileArrays arrive inside structs such as SplitRangeCSRMatrix, and inside
+# the kernel function itself as a closure's captures). Hopper and later lower
+# them fine, and there they are the fast path. `argtypes` are the types of
+# every value the launch flattens, the kernel function's included
+# (`kernel_types`).
 function has_16bit_float_array(@nospecialize(T), seen = Base.IdSet{Any}())
     T in seen && return false
     push!(seen, T)
@@ -215,6 +218,10 @@ function tma_eligible(@nospecialize(argtypes), target::TargetInfo=_default_targe
     target.backend == "cuda" && target.arch isa Int && target.arch >= 90 && return true
     return !any(has_16bit_float_array, argtypes isa Type ? argtypes.parameters : argtypes)
 end
+
+"The types of the values a launch of `f` flattens: `f`'s own (a closure's captures), then `argtypes`."
+kernel_types(@nospecialize(f), @nospecialize(argtypes)) =
+    (Core.Typeof(f), (argtypes isa Type ? argtypes.parameters : argtypes)...)
 
 """
 Launch hints resolved as cuTile does: the explicit value, else the kernel's
@@ -253,7 +260,7 @@ function triton_kernel_candidates(@nospecialize(f), @nospecialize(argtypes);
                                   name::String, use_tma::Bool=true, wide_offsets::Bool=false,
                                   hints=(;), alias_groups::ct.AliasGroups=())
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
-    use_tma &= tma_eligible(argtypes)
+    use_tma &= tma_eligible(kernel_types(f, argtypes))
     backend = _default_target().backend
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, alias_groups, backend)
     h = resolve_hints(hints, meta.kernel_meta)
@@ -280,7 +287,7 @@ function triton_kernel(@nospecialize(f), @nospecialize(argtypes);
                        num_stages::Union{Int,Nothing}=nothing, use_tma::Bool=true,
                        wide_offsets::Bool=false, hints=(;), alias_groups::ct.AliasGroups=())
     use_tma &= _default_target().backend == "cuda"  # descriptors are NVIDIA-only
-    use_tma &= tma_eligible(argtypes)
+    use_tma &= tma_eligible(kernel_types(f, argtypes))
     ttir, argspec, meta = emit_ttir(f, argtypes; name, use_tma, wide_offsets, alias_groups,
                                     backend=_default_target().backend)
     h = resolve_hints(hints, meta.kernel_meta)
@@ -471,7 +478,7 @@ function code_triton(io::IO, @nospecialize(f), @nospecialize(argtypes);
                      num_warps::Union{Int,Nothing}=nothing, num_stages::Union{Int,Nothing}=nothing,
                      use_tma::Bool=true, target::TargetInfo=_default_target(), hints=(;))
     cuda = target.backend == "cuda"
-    use_tma &= cuda && tma_eligible(argtypes, target)  # descriptors are NVIDIA-only
+    use_tma &= cuda && tma_eligible(kernel_types(f, argtypes), target)  # descriptors are NVIDIA-only
     ttir, _, meta = emit_ttir(f, argtypes; name, use_tma, backend=target.backend)
     # the warps and occupancy a launch would compile with
     h = resolve_hints(hints, meta.kernel_meta, target)

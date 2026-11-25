@@ -196,6 +196,23 @@ let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
 end
 
+# a closure's captured arrays count too (TTIR only: the pointer is never read)
+let src = TA2(Float16)(Ptr{Float16}(0), (Int32(256), Int32(256)), (Int32(1), Int32(256)))
+    function copy_captured(dst)
+        i = ct.bid(1); j = ct.bid(2)
+        t = ct.load(src; index=(i, j), shape=(64, 64))
+        ct.store(dst; index=(i, j), tile=convert(ct.Tile{Float32}, t))
+        return
+    end
+    ttir(sm) = (io = IOBuffer();
+        TritonRun.code_triton(io, copy_captured, Tuple{TA2(Float32)}; name="k",
+                              target=TritonRun.target(:nvidia; arch=sm));
+        String(take!(io)))
+    check("f16 TMA skipped on sm_89 for a captured array",
+          occursin("tt.make_tensor_descriptor", ttir(90)) &&
+          !occursin("tt.make_tensor_descriptor", ttir(89)))
+end
+
 # --- floor/ceil division of integer tiles -----------------------------------
 function round_div(qf, qc, x, d)
     a = ct.load(x; index=Int32(1), shape=(64,))
