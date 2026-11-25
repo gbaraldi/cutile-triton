@@ -30,7 +30,9 @@ function ShimKernel{F, TT}(cands, chosen, f, hints, alias_groups) where {F, TT}
                       nothing, hints, (; hints..., alias_groups), labels)
 end
 
+# launches may run on concurrent tasks: `KERNEL_LOCK` guards `KERNEL_CACHE`
 const KERNEL_CACHE = Dict{Any, Any}()
+const KERNEL_LOCK = ReentrantLock()
 
 sanitize(s) = (n = replace(s, r"[^A-Za-z0-9_]" => "_"); isempty(n) || isdigit(n[1]) ? "k_" * n : n)
 
@@ -42,7 +44,13 @@ function get_kernel(@nospecialize(f), @nospecialize(tt); wide_offsets::Bool=fals
     # CodeInstance caching for this; a Dict is enough for the harness). A
     # closure keys by value, so each set of captured values compiles anew.
     key = (f, tt, Base.get_world_counter(), wide_offsets, hints, alias_groups)
-    haskey(KERNEL_CACHE, key) && return KERNEL_CACHE[key]
+    # compiling under the lock builds each kernel once
+    @lock KERNEL_LOCK get!(KERNEL_CACHE, key) do
+        compile_kernel(f, tt, hints; wide_offsets, alias_groups)
+    end
+end
+
+function compile_kernel(@nospecialize(f), @nospecialize(tt), hints; wide_offsets, alias_groups)
     name = sanitize(string(nameof(typeof(f))))
     # TMA off for the coverage run: legality hardening (min box bytes, stride
     # divisibility) is orthogonal to intrinsic coverage.
@@ -52,9 +60,7 @@ function get_kernel(@nospecialize(f), @nospecialize(tt); wide_offsets::Bool=fals
     else
         TritonRun.triton_kernel_candidates(f, tt; name, wide_offsets, hints, alias_groups)
     end
-    k = ShimKernel{typeof(f), tt}(cands, length(cands) == 1 ? 1 : 0, f, hints, alias_groups)
-    KERNEL_CACHE[key] = k
-    return k
+    return ShimKernel{typeof(f), tt}(cands, length(cands) == 1 ? 1 : 0, f, hints, alias_groups)
 end
 
 _iscuda() = TritonRun._default_target().backend == "cuda"
@@ -64,9 +70,12 @@ _iscuda() = TritonRun._default_target().backend == "cuda"
 # launches so the native reflection macros keep working. Without a CUDA
 # device (ROCm) the job targets `REFLECTION_SM_ARCH`, the H100 the CUDA runs
 # use. `JOB_SOURCES` maps a reported job back to the `(f, tt)` it was built
-# from, for hooks that reflect through this backend instead (`code_triton`).
+# from, for hooks that reflect through this backend instead (`code_triton`);
+# `TileJob`s compare structurally, so it holds one entry per distinct job.
+# `JOB_LOCK` guards it against launches on concurrent tasks.
 const REFLECTION_SM_ARCH = v"9.0"
 const JOB_SOURCES = Dict{Any, Any}()
+const JOB_LOCK = ReentrantLock()
 const JOB_OPTIONS = (:opt_level, :num_ctas, :occupancy, :num_worker_warps, :name)
 
 # Whether Tile IR supports `sm_arch` at bytecode `version`: the architecture
@@ -94,7 +103,7 @@ function report_job(@nospecialize(f), @nospecialize(tt); sm_arch=nothing,
     tile_ir_target_supported(sm_arch, bytecode_version) || return nothing
     opts = (; (k => v for (k, v) in pairs(kwargs) if k in JOB_OPTIONS)...)
     job = ct.tile_job(f, tt; sm_arch, bytecode_version, alias_groups, opts...)
-    JOB_SOURCES[job] = (f, tt)
+    @lock JOB_LOCK JOB_SOURCES[job] = (f, tt)
     GPUCompiler.run_compile_hook(job)
     return nothing
 end

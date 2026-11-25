@@ -45,7 +45,7 @@ const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
             quote
                 shim = TileTriton.TritonShim
                 shim.GPUCompiler.with_compile_hook(function (job)
-                    f, tt = shim.JOB_SOURCES[job]
+                    f, tt = @lock shim.JOB_LOCK shim.JOB_SOURCES[job]
                     TileTriton.TritonRun.code_triton($io, f, tt; stage=$(QuoteNode(stage)))
                 end) do
                     $(esc(ex))
