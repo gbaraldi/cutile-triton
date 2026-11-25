@@ -22,6 +22,9 @@ const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
         ones(args...)  = AMDGPU.ones(args...)
         fill(args...)  = AMDGPU.fill(args...)
         synchronize(args...) = AMDGPU.synchronize(args...)
+        context() = AMDGPU.context()
+        stream() = AMDGPU.stream()
+        synchronize(::AMDGPU.HIPContext) = AMDGPU.synchronize()
         const var"@allowscalar" = AMDGPU.var"@allowscalar"
         device() = AMDGPU.device()
         # the suite's capability checks gate NVIDIA features (thread-block
@@ -29,17 +32,29 @@ const BACKEND = get(ENV, "TILETRITON_TEST_BACKEND", "cuda")
         # uses, so both runs take the same branches
         capability(::Any) = v"9.0"
         # device assembly of the kernels `ex` compiles: AMDGCN, SASS's counterpart
-        macro device_code_sass(ex)
+        # (the shim reports each launch's job to GPUCompiler's compile hook
+        # and records the `(f, tt)` it came from)
+        function device_code(args, stage)
+            ex = args[end]
+            io = :stdout
+            for kw in args[1:end-1]
+                Meta.isexpr(kw, :(=)) && kw.args[1] === :io ||
+                    error("unsupported @device_code option $kw")
+                io = esc(kw.args[2])
+            end
             quote
-                cuTile.compile_hook[] = (f, tt) ->
-                    TileTriton.TritonRun.code_triton(stdout, f, tt; stage=:amdgcn)
-                try
+                shim = TileTriton.TritonShim
+                shim.GPUCompiler.with_compile_hook(function (job)
+                    f, tt = @lock shim.JOB_LOCK shim.JOB_SOURCES[job]
+                    TileTriton.TritonRun.code_triton($io, f, tt; stage=$(QuoteNode(stage)))
+                end) do
                     $(esc(ex))
-                finally
-                    cuTile.compile_hook[] = nothing
                 end
             end
         end
+        macro device_code_sass(args...) device_code(args, :amdgcn) end
+        # LLVM IR, PTX's counterpart
+        macro device_code_ptx(args...) device_code(args, :llir) end
     end
     TileTriton.use_rocm!()
 else
@@ -95,6 +110,9 @@ try
                             Core.eval(m, :(using Test, CUDA, cuTile))
                         end
                         Core.eval(m, :(import cuTile as ct))
+                        # the rest of cuTile's test init code
+                        Core.eval(m, :(import GPUCompiler))
+                        Core.eval(m, :(using Base.ScopedValues: with))
                         Core.eval(m, :(import TileTriton: TritonShim))
                         # @filecheck FileCheck-verifies native Tile IR text —
                         # inapplicable to this backend. Still RUN the block

@@ -166,6 +166,21 @@ for (T, signed) in ((Int32, 1), (UInt32, 0), (Bool, 0))
     check("print isSigned=$signed for $T", occursin("isSigned = array<i32: $signed>", ttir))
 end
 
+# --- emit_ttir calls the selected target's device math library --------------
+function atan2_tile(a, b, c)
+    ta = ct.load(a; index=Int32(1), shape=(16,))
+    tb = ct.load(b; index=Int32(1), shape=(16,))
+    ct.store(c; index=Int32(1), tile=atan.(ta, tb))
+    return
+end
+
+let (ttir,) = emit_ttir(atan2_tile, Tuple{TA1(Float32), TA1(Float32), TA1(Float32)})
+    own, other = BACKEND == "rocm" ? ("__ocml_atan2_f32", "__nv_atan2f") :
+                                     ("__nv_atan2f", "__ocml_atan2_f32")
+    check("emit_ttir defaults to the target's math library",
+          occursin(own, ttir) && !occursin(other, ttir))
+end
+
 # --- reflection for either vendor, without that vendor's GPU ----------------
 let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     reflect(stage, target) = (io = IOBuffer();
@@ -179,6 +194,23 @@ let tt16 = Tuple{TA2(Float16), TA2(Float16)}
     target(sm) = TritonRun.TargetInfo("cuda", sm, 32, "cubin")
     check("f16 TMA kept on sm_90", TritonRun.tma_eligible(tt16, target(90)))
     check("f16 TMA skipped on sm_89", !TritonRun.tma_eligible(tt16, target(89)))
+end
+
+# a closure's captured arrays count too (TTIR only: the pointer is never read)
+let src = TA2(Float16)(Ptr{Float16}(0), (Int32(256), Int32(256)), (Int32(1), Int32(256)))
+    function copy_captured(dst)
+        i = ct.bid(1); j = ct.bid(2)
+        t = ct.load(src; index=(i, j), shape=(64, 64))
+        ct.store(dst; index=(i, j), tile=convert(ct.Tile{Float32}, t))
+        return
+    end
+    ttir(sm) = (io = IOBuffer();
+        TritonRun.code_triton(io, copy_captured, Tuple{TA2(Float32)}; name="k",
+                              target=TritonRun.target(:nvidia; arch=sm));
+        String(take!(io)))
+    check("f16 TMA skipped on sm_89 for a captured array",
+          occursin("tt.make_tensor_descriptor", ttir(90)) &&
+          !occursin("tt.make_tensor_descriptor", ttir(89)))
 end
 
 # --- floor/ceil division of integer tiles -----------------------------------
@@ -401,7 +433,7 @@ let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     catch e
         sprint(showerror, e)
     end
-    check("invalid num_worker_warps is rejected", occursin("must be either 4 or 8", err((; num_worker_warps=3))))
+    check("invalid num_worker_warps is rejected", occursin("must be a power of 2", err((; num_worker_warps=3))))
     clusters = TritonRun._default_target().backend == "cuda" && TritonRun._default_target().arch >= 100
     check("num_ctas > 1 needs thread-block clusters",
           clusters || occursin("num_cta_in_cga", err((; num_ctas=2))))
@@ -573,6 +605,22 @@ let n = 4096, tile = 256
     check("racing restores arguments (one application)", all(==(2f0), Array(acc)))
 end
 
+# --- a compile hook sees Tile IR jobs only for targets Tile IR supports ------
+let n = 4096, tile = 256, jobs = []
+    acc = GPU.ones(Float32, n)
+    x = GPU.ones(Float32, n)
+    TileTriton.TritonShim.GPUCompiler.with_compile_hook(job -> push!(jobs, job)) do
+        # Tile IR has no sm_75 target; Triton still runs the kernel
+        ct.launch(accumulate!, cld(n, tile), acc, x, ct.Constant(tile); sm_arch=v"7.5")
+        GPU.synchronize()
+        TileTriton.TritonShim.report_job(accumulate!, Tuple{TA1(Float32), TA1(Float32),
+                                                            ct.Constant{Int, tile}};
+                                         sm_arch=v"9.0")
+    end
+    check("compile hook skips unsupported Tile IR targets",
+          all(==(2f0), Array(acc)) && length(jobs) == 1 && jobs[1] isa ct.TileJob)
+end
+
 # --- a failing ct.@assert aborts with its message ---------------------------
 # It takes the context down, hence a subprocess. cuTile's own version of this
 # test runs its native backend in the child, so it covers neither ROCm nor us.
@@ -602,7 +650,7 @@ let script = """
     reader = @async read(output, String)
     wait(proc)
     check("failing ct.@assert aborts with its message",
-          proc.exitcode != 0 && contains(fetch(reader), "custom assert message"))
+          !success(proc) && contains(fetch(reader), "custom assert message"))
 end
 
 # --- cuTile's host API on the backend's arrays ------------------------------
