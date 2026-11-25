@@ -166,6 +166,21 @@ for (T, signed) in ((Int32, 1), (UInt32, 0), (Bool, 0))
     check("print isSigned=$signed for $T", occursin("isSigned = array<i32: $signed>", ttir))
 end
 
+# --- emit_ttir calls the selected target's device math library --------------
+function atan2_tile(a, b, c)
+    ta = ct.load(a; index=Int32(1), shape=(16,))
+    tb = ct.load(b; index=Int32(1), shape=(16,))
+    ct.store(c; index=Int32(1), tile=atan.(ta, tb))
+    return
+end
+
+let (ttir,) = emit_ttir(atan2_tile, Tuple{TA1(Float32), TA1(Float32), TA1(Float32)})
+    own, other = BACKEND == "rocm" ? ("__ocml_atan2_f32", "__nv_atan2f") :
+                                     ("__nv_atan2f", "__ocml_atan2_f32")
+    check("emit_ttir defaults to the target's math library",
+          occursin(own, ttir) && !occursin(other, ttir))
+end
+
 # --- reflection for either vendor, without that vendor's GPU ----------------
 let tt = Tuple{TA1(Float32), TA1(Float32), TA1(Float32), ct.Constant{Int, 1024}}
     reflect(stage, target) = (io = IOBuffer();

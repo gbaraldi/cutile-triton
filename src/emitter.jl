@@ -2386,16 +2386,21 @@ end
 "Whether a kernel function of inferred type `AT` carries values (a closure's captures)."
 captures_values(@nospecialize(AT)) = !(AT isa Core.Const) && !Base.issingletontype(widenconst(AT))
 
+# the vendor of the package's selected compile target (`TritonRun.set_target!`)
+default_backend() = parentmodule(@__MODULE__).TritonRun._default_target().backend
+
 """
-    emit_ttir(f, argtypes; name="kernel") -> (ttir_text, Vector{ArgSpec})
+    emit_ttir(f, argtypes; name="kernel", backend) -> (ttir_text, Vector{ArgSpec})
 
 Lower a cuTile kernel to Triton IR text plus the flattened parameter spec
-the launcher needs.
+the launcher needs. `backend` (`"cuda"` or `"hip"`) is the vendor whose device
+math library the TTIR calls; it defaults to the selected compile target's.
 """
 function emit_ttir(@nospecialize(f), @nospecialize(argtypes); name::String="kernel",
                    use_tma::Bool=true, hints::Union{Bool,Nothing}=nothing,
                    wide_offsets::Bool=false,
-                   @nospecialize(alias_groups::ct.AliasGroups=()), backend::String="cuda")
+                   @nospecialize(alias_groups::ct.AliasGroups=()),
+                   backend::String=default_backend())
     USE_TMA[] = use_tma
     EMIT_BACKEND[] = backend
     WIDE_OFFSETS[] = wide_offsets
