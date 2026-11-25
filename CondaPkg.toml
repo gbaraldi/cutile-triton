@@ -1,5 +1,7 @@
 [deps]
-python = ">=3.10,<4"
+# triton 3.8.0 publishes wheels for cp310-cp314 only; an unbounded python
+# lets a fresh environment pick 3.15 and fail to resolve triton.
+python = ">=3.10,<3.15"
 
 [pip.deps]
 # The Triton compiler is a compile-time-only dependency: TTIR text goes in,
