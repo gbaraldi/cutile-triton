@@ -602,7 +602,7 @@ let script = """
     reader = @async read(output, String)
     wait(proc)
     check("failing ct.@assert aborts with its message",
-          proc.exitcode != 0 && contains(fetch(reader), "custom assert message"))
+          !success(proc) && contains(fetch(reader), "custom assert message"))
 end
 
 # --- cuTile's host API on the backend's arrays ------------------------------
