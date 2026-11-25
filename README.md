@@ -17,7 +17,10 @@ Triton exists. Prototype quality: this exists to inform the design of a real
 Triton target inside cuTile.jl, not to be a package. Internals, workarounds
 and upstream findings are in [DEVDOCS.md](DEVDOCS.md).
 
-## Status (October 2026, triton 3.8.0, cuTile 1.0.0)
+## Status
+
+TileTriton targets cuTile 1.1 and triton 3.8.0. The H100 and MI300A results
+were measured in October 2026 with cuTile 1.0.0:
 
 | | H100 NVL (sm_90) | MI300A (gfx942, ROCm 7.2.4) |
 |---|---|---|
@@ -27,19 +30,20 @@ and upstream findings are in [DEVDOCS.md](DEVDOCS.md).
 ¹ core.jl's failing-assertion test runs native cuTile on CUDA in a child
 process; the standalone suite checks the same behaviour through this backend.
 
-TileTriton now targets cuTile 1.1 (the numbers above are from 1.0.0). On a
-Radeon 880M (gfx1150, AMDGPU.jl 2.13 with its ROCm artifacts, no CUDA
-driver) the standalone suite passes 61 / 61 and cuTile 1.1's device suite
-1,977 / 2 / 4; all six are native-CUDA tests (compilation.jl's context and
-reflection tests, the failing-assertion child process, and a `code_tiled`
-that defaults to the CUDA device).
+With cuTile 1.1.0 on a Radeon 880M (gfx1150, AMDGPU.jl 2.13 with its ROCm
+artifacts, no CUDA driver), the standalone suite passes 64 / 64 and
+cuTile's device suite measured 1,977 / 2 / 4; all six are native-CUDA
+tests (compilation.jl's context and reflection tests, the failing-assertion
+child process, and a `code_tiled` that defaults to the CUDA device).
 
-The whole cuTile 1.0 language is covered, including gather/scatter views,
-atomics through views and masked `atomic_cas`, RNG, asserts and runtime
-throws, general loops, and launch hints. On H100, 8 of cuTile's 11 example
-workloads run at or above native tileiras (fft 3.0×, layernorm 2–2.5×,
-softmax 1.3–1.7×), MoE at 0.98× and fmha at 0.90×; batched matmul is about
-half as fast, where tileiras warp-specializes automatically. On MI300A,
+The cuTile language is covered, including gather/scatter views, atomics
+through views and masked `atomic_cas`, RNG, asserts and runtime throws,
+general loops, and launch hints, except `extract` and `insert` at runtime
+slice indices and scans over more than one tile. Performance, measured
+with cuTile 1.0.0: on H100, 8 of cuTile's 11 example workloads run at or
+above native tileiras (fft 3.0×, layernorm 2–2.5×, softmax 1.3–1.7×), MoE
+at 0.98× and fmha at 0.90×; batched matmul is about half as fast, where
+tileiras warp-specializes automatically. On MI300A,
 against AMDGPU.jl 2.9.1: softmax 4.5× and rowsum 1.3× faster than its
 GPUArrays paths, f32 matmul 1.12× rocBLAS; f16 matmul is at 0.75× rocBLAS
 and vadd at 0.94× a native kernel.

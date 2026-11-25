@@ -116,8 +116,8 @@ shared memory (AMD has no such query; triton defaults to 2 stages there).
 - `atan2` calls the vendor's device library (`tt.extern_elementwise`:
   libdevice `__nv_atan2f` on NVIDIA, OCML `__ocml_atan2_f32` on AMD, which
   the backend links; 16-bit floats in f32), so `emit_ttir` takes the vendor
-  as `backend`. `pow` and `powi` (exponent converted to float) are
-  `exp2(y·log2|x|)` with IEEE sign and zero fixups.
+  as `backend`, by default the selected target's. `pow` and `powi` (exponent
+  converted to float) are `exp2(y·log2|x|)` with IEEE sign and zero fixups.
 - `egal` (`===`, cuTile 1.1) compares floats as same-width integers; tensors
   reinterpret with `tt.bitcast`, which triton legalizes and `arith.bitcast`
   it does not.
@@ -212,20 +212,18 @@ MI300A vs native AMDGPU.jl 2.9.1 (`bench/rocm_compare.jl`, October 2026, ROCm
 | matmul f32 4096³ | 63.5 TFLOPS | 56.8 TFLOPS (rocBLAS) | 1.12× |
 
 The native rows ran with `ROCM_COMPARE=native` in an environment of their
-own: cuTile 1.0.0 capped GPUArrays at 11 (AMDGPU.jl 2.9 needs 12.1) and
-CUDA_Compiler_jll at 0.5 (holding LLVM.jl at 9). cuTile 1.1.0 lifts both, so
-TileTriton's environment now resolves with the current AMDGPU.jl and
-GPUCompiler. Against the AMDGPU.jl 2.7.3 that environment resolves, the
-baselines are far lower (`mul!` on Float16 3.3 TFLOPS before AMDGPU.jl#1049,
-`sum!` 194 GB/s, softmax 213 GB/s). The benchmark builds its argument types
-from the actual arrays (`ct.TileArray`), as `ct.launch` does: the
-hand-written `ArraySpec`s it used before claimed no size or stride
-divisibility under cuTile 1.0's spec layout, which kept loads scalar (f16
-matmul was 133 TFLOPS). rowsum measured 2,441 GB/s in August; the August code
-and cuTile 0.3.2 rerun today on the same kind of node measure ~1,830, as
-current code does, so that difference is the node. Matmul tile shapes are
-NVIDIA-tuned; CDNA autotuning (`waves_per_eu`, `matrix_instr_nonkdim`,
-`kpack`) is the open lever for f16.
+own, since cuTile 1.0.0 capped GPUArrays at 11 (AMDGPU.jl 2.9 needs 12.1)
+and CUDA_Compiler_jll at 0.5 (holding LLVM.jl at 9); cuTile 1.1 allows both.
+Against AMDGPU.jl 2.7.3 the baselines are far lower (`mul!` on Float16
+3.3 TFLOPS, as 2.7.3 predates AMDGPU.jl#1049, `sum!` 194 GB/s, softmax
+213 GB/s). The benchmark builds its argument types from the actual arrays
+(`ct.TileArray`), as `ct.launch` does: hand-written `ArraySpec`s that claim
+no size or stride divisibility keep loads scalar (f16 matmul measured
+133 TFLOPS that way). rowsum measured 2,441 GB/s in August 2026; in October,
+both the August code with cuTile 0.3.2 and the code above measured ~1,830
+on the same kind of node, so that difference is the node. Matmul tile
+shapes are NVIDIA-tuned; CDNA autotuning (`waves_per_eu`,
+`matrix_instr_nonkdim`, `kpack`) is the open lever for f16.
 
 ## Workarounds and upstream findings
 
@@ -243,23 +241,23 @@ triton 3.8.0:
   Python frontend asserts K ≥ 32); int8 mma is emulated with an exact f32 dot.
 - tf32 descriptor matmuls are slower than pointer loads on sm_90.
 
-Fixed by moving from 3.7.1 to 3.8.0: AMD ran a tensor `atomic_cas` that
+Fixed in 3.8.0, present in 3.7.1: AMD ran a tensor `atomic_cas` that
 missed the buffer-atomic path in every thread holding a copy of an element
 (later copies returned the first copy's update; triton-lang/triton#9605). 3.8
 also changed the tensor descriptor type syntax (`!tt.tensordesc<64x64xf16>`,
-#9851) and reports `global_scratch_size` on AMD, which the launchers now
+#9851) and reports `global_scratch_size` on AMD, which the launchers
 allocate for both vendors. The xchg fix, #11081 and dedicated
 `atomic_load`/`atomic_store` ops are in release/3.9.x (untagged); AMD
 floor/ceil division, int8 dot K < 32 (no verifier check) and `atomic_cas`
 masks are still open upstream.
 
-cuTile.jl: on 1.0.0 the emitter overrode `promote_scalar_type` (FieldError
-on a `Union` of tuples) and demoted the optimizer's one in-place rewrite rule
-(it corrupted an index tile shared by a mask comparison and a gather).
-1.1.0 fixes both (JuliaGPU/cuTile.jl#336, #306), so the overrides are gone.
-A kernel with a type-unstable tuple (`flag ? (Int32(1), Int32(2)) :
-(1f0, 2f0)`) failed natively with "SSAValue %N not found in context" on
-1.0.0, rather than with a clear error (not rechecked on 1.1.0).
+cuTile.jl: the emitter relies on two fixes in cuTile 1.1.0:
+`promote_scalar_type` on a `Union` of tuples (a FieldError in 1.0.0;
+JuliaGPU/cuTile.jl#336) and the optimizer's in-place rewrite rule, which in
+1.0.0 corrupted an index tile shared by a mask comparison and a gather
+(#306). On cuTile 1.0.0, a kernel with a type-unstable tuple (`flag ?
+(Int32(1), Int32(2)) : (1f0, 2f0)`) failed natively with "SSAValue %N not
+found in context" rather than with a clear error.
 
 cuTile.jl's `launch` evaluates `stream=CUDACore.stream()` eagerly and its
 host RNG API and `TileArray` construction assume CUDA memory; the shim and the
